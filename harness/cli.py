@@ -130,6 +130,25 @@ def _cmd_aggregate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_replay(args: argparse.Namespace) -> int:
+    from .manifest import replay
+    report = replay(args.run_dir)
+    sys.stdout.write(json.dumps({
+        "config_hash_match": report["config_hash_match"],
+        "identical": report["identical"],
+        "drift": report["drift"],
+        "tasks": [{"task_id": t["task_id"], "outputs_match": t["outputs_match"]} for t in report["tasks"]],
+    }, indent=2) + "\n")
+    return 0
+
+
+def _cmd_diff(args: argparse.Namespace) -> int:
+    from .diff import diff_runs
+    report = diff_runs(args.run_a, args.run_b)
+    sys.stdout.write(json.dumps(report, indent=2) + "\n")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="harness", description="AI-assisted phylogenomics harness")
     sub = p.add_subparsers(dest="command", required=True)
@@ -137,6 +156,15 @@ def build_parser() -> argparse.ArgumentParser:
     pa = sub.add_parser("aggregate", help="aggregate a run's results into results.csv")
     pa.add_argument("run_dir")
     pa.set_defaults(func=_cmd_aggregate)
+
+    pr = sub.add_parser("replay", help="re-execute a frozen run and report drift")
+    pr.add_argument("run_dir")
+    pr.set_defaults(func=_cmd_replay)
+
+    pdf = sub.add_parser("diff", help="compare two runs (config/version/seed/result drift)")
+    pdf.add_argument("run_a")
+    pdf.add_argument("run_b")
+    pdf.set_defaults(func=_cmd_diff)
 
     pe = sub.add_parser("capture-env", help="capture the environment")
     pe.add_argument("--out", default="runs/env_snapshot")
