@@ -94,12 +94,31 @@ class EventStore:
         *,
         clock: callable | None = None,
         worker: str | None = None,
+        fsync_every: int = 1,
     ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._seq_path = self.path.with_suffix(self.path.suffix + ".seq")
         self._lock = threading.Lock()  # intra-process; flock covers inter-process
         self._clock = clock
         self.worker = worker
+        # fsync_every=1 -> durable (fsync each emit); larger batches trade crash
+        # durability for throughput (audit P1.5). 0 disables fsync (flush only).
+        self.fsync_every = fsync_every
+        self._since_fsync = 0
+
+    def _next_seq(self) -> int:
+        """Global sequence via a sidecar counter, guarded by the same flock as the
+        append. O(1) per emit instead of re-counting the whole file (audit P1.5)."""
+        try:
+            cur = int(self._seq_path.read_text())
+        except (OSError, ValueError):
+            cur = 0
+        nxt = cur + 1
+        tmp = self._seq_path.with_suffix(self._seq_path.suffix + ".tmp")
+        tmp.write_text(str(nxt))
+        os.replace(tmp, self._seq_path)
+        return nxt
 
     def emit(self, event_type: EventType | str, **fields: Any) -> dict[str, Any]:
         if isinstance(event_type, EventType):
@@ -108,14 +127,11 @@ class EventStore:
             # Enforce closed vocabulary: raises ValueError on unknown name.
             etype = EventType(event_type).value
         with self._lock:
-            # 'a+b' so the fd is positioned at EOF for the append; we still take an
-            # exclusive flock to serialise across processes and to count lines for seq.
-            with open(self.path, "a+b") as fh:
+            with open(self.path, "ab") as fh:
                 if _HAVE_FCNTL:
                     fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
                 try:
-                    fh.seek(0)
-                    seq = sum(1 for _ in fh) + 1  # global across all writers
+                    seq = self._next_seq()  # O(1), under the exclusive lock
                     event: dict[str, Any] = {"seq": seq, "event": etype}
                     if self._clock is not None:
                         event["ts"] = self._clock()
@@ -123,10 +139,12 @@ class EventStore:
                         event["worker"] = self.worker
                     event.update(fields)
                     line = (json.dumps(event, sort_keys=True, default=str) + "\n").encode("utf-8")
-                    fh.seek(0, os.SEEK_END)
                     fh.write(line)
-                    fh.flush()
-                    os.fsync(fh.fileno())
+                    fh.flush()  # always visible to other processes via the page cache
+                    self._since_fsync += 1
+                    if self.fsync_every and self._since_fsync >= self.fsync_every:
+                        os.fsync(fh.fileno())
+                        self._since_fsync = 0
                 finally:
                     if _HAVE_FCNTL:
                         fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
@@ -136,11 +154,18 @@ class EventStore:
         if not self.path.exists():
             return []
         out: list[dict[str, Any]] = []
+        # Shared lock so a concurrent append cannot expose a half-written line (P2.9).
         with open(self.path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    out.append(json.loads(line))
+            if _HAVE_FCNTL:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_SH)
+            try:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        out.append(json.loads(line))
+            finally:
+                if _HAVE_FCNTL:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
         return out
 
     def iter_type(self, event_type: EventType) -> Iterator[dict[str, Any]]:

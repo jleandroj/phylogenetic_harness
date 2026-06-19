@@ -44,6 +44,14 @@ class DatasetInput:
         missing = [k for k in ("sample_id", "path", "format") if not d.get(k)]
         if missing:
             raise ManifestError(f"input missing required field(s): {missing}")
+        # Path confinement (audit P2.9): a manifest must not point outside its own
+        # directory. Reject absolute paths and parent traversal so checksumming
+        # cannot read arbitrary files.
+        path = str(d["path"])
+        if Path(path).is_absolute() or ".." in Path(path).parts:
+            raise ManifestError(
+                f"input path {path!r} must be relative to the manifest and may not use '..'"
+            )
         qs = d.get("quality_status", "unknown")
         if qs not in QUALITY_STATUSES:
             raise ManifestError(f"invalid quality_status {qs!r}; allowed: {QUALITY_STATUSES}")
@@ -60,8 +68,14 @@ class DatasetInput:
         )
 
     def compute_checksum(self, base_dir: Path) -> DatasetInput:
-        """Fill checksum + size from the file on disk, resolved against base_dir."""
-        p = (base_dir / self.path) if not Path(self.path).is_absolute() else Path(self.path)
+        """Fill checksum + size from the file on disk, resolved against base_dir.
+
+        Defence in depth (audit P2.9): even though from_dict rejects absolute/`..`
+        paths, verify the resolved path stays within base_dir before reading."""
+        base = Path(base_dir).resolve()
+        p = (base / self.path).resolve()
+        if base not in p.parents and p != base:
+            raise ManifestError(f"resolved input path {p} escapes base dir {base}")
         if p.exists() and p.is_file():
             self.checksum = "sha256:" + ids.sha256_file(p)
             self.size_bytes = p.stat().st_size
