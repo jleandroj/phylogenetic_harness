@@ -34,6 +34,13 @@ class ResourceRequest:
             "walltime_minutes": self.walltime_minutes,
         }
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> ResourceRequest:
+        return cls(
+            cpus=d.get("cpus", 1), memory_gb=d.get("memory_gb", 4.0),
+            gpu=bool(d.get("gpu", False)), walltime_minutes=d.get("walltime_minutes", 30),
+        )
+
 
 @dataclass
 class FailurePolicy:
@@ -47,6 +54,13 @@ class FailurePolicy:
             "max_retries": self.max_retries,
             "timeout_seconds": self.timeout_seconds,
         }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> FailurePolicy:
+        return cls(
+            retryable=bool(d.get("retryable", True)), max_retries=d.get("max_retries", 2),
+            timeout_seconds=d.get("timeout_seconds", 1800),
+        )
 
 
 @dataclass
@@ -88,6 +102,26 @@ class Task:
                 f"task {self.task_id!r} is incomplete; missing: {problems} "
                 f"(spec §24.3: a task does not exist without inputs, outputs, tool, validators)"
             )
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> Task:
+        """Reconstruct a Task from its serialised form (for replay/resume/scheduler).
+
+        Mutable run-state (status_*/retries) is intentionally reset to its initial
+        value: a reconstructed task is re-run from a clean technical state.
+        """
+        return cls(
+            task_id=d["task_id"], run_id=d["run_id"], task_type=d["task_type"],
+            tool_id=d["tool_id"], command_template=d.get("command_template", ""),
+            inputs=list(d["inputs"]), outputs_expected=list(d["outputs_expected"]),
+            validators=list(d["validators"]),
+            resources=ResourceRequest.from_dict(d.get("resources", {})),
+            failure_policy=FailurePolicy.from_dict(d.get("failure_policy", {})),
+            requires_approval=bool(d.get("requires_approval", False)),
+            seed_required=bool(d.get("seed_required", False)),
+            params=dict(d.get("params", {})),
+            command_argv=list(d.get("command_argv", [])),
+        )
 
     def set_technical(self, new: TechnicalState) -> TechnicalState:
         """Transition technical state through the legal-transition guard."""
