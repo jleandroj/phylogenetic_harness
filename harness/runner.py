@@ -67,15 +67,91 @@ class TaskRunner:
     def _now(self) -> Any:
         return self._clock()
 
-    def _fail(self, task: Task, reason: str, *, fatal: bool = False) -> TechnicalState:
-        policy = task.failure_policy
-        if fatal or not policy.retryable or task.retries >= policy.max_retries:
-            new = TechnicalState.FAILED_FATAL
-        else:
-            new = TechnicalState.FAILED_RETRYABLE
+    def _persist_bundle(self, task_id: str, bundle: dict[str, Any]) -> None:
+        # P3.10: explicit serialisation. A non-serialisable value is a bug we want
+        # to surface loudly, not silently stringify with default=str.
+        text = json.dumps(bundle, indent=2, sort_keys=True)
+        (self.results_dir / f"{task_id}.validation.json").write_text(text, encoding="utf-8")
+
+    def _to_failed(self, task: Task, reason: str, *, fatal: bool) -> TechnicalState:
+        """Transition a RUNNING task to a failed state and emit task_failed."""
+        new = TechnicalState.FAILED_FATAL if fatal else TechnicalState.FAILED_RETRYABLE
         task.set_technical(new)
         self.events.emit(EventType.TASK_FAILED, task_id=task.task_id, reason=reason, state=new.value)
         return new
+
+    def _build_argv(self, task: Task, contract, bindings: dict[str, Any]) -> list[str]:
+        # P1.9: deterministic seed injection.
+        if task.seed_required and self.seeds is not None:
+            bindings.setdefault("seed", self.seeds.derive(task.run_id, task.task_id))
+        argv = task.render_argv(**bindings)
+        if task.seed_required and contract.seed_flag and self.seeds is not None:
+            argv = argv + [contract.seed_flag, str(bindings["seed"])]
+        return argv
+
+    def _gpu_for(self, task: Task) -> str | None:
+        """Resolve the GPU to pin (P2.9): only when the task wants GPU AND a real
+        device is visible. Never blindly assume device 0."""
+        if not task.resources.gpu:
+            return None
+        from . import hardware
+        gpu = hardware.gpu_profile()
+        if gpu.get("available") and gpu.get("devices"):
+            return str(gpu["devices"][0]["index"])
+        return None  # GPU requested but none usable; executor records it unset
+
+    def _attempt(
+        self, task: Task, argv: list[str], attempt: int, validator_kwargs: dict[str, Any]
+    ) -> tuple[ExecutionResult, list[CheckResult], bool]:
+        """One execution attempt: run + validate. Raises propagate to run_task."""
+        self.events.emit(EventType.TASK_STARTED, task_id=task.task_id, attempt=attempt)
+        self.events.emit(EventType.COMMAND_STARTED, task_id=task.task_id, command=argv)
+        result = self.executor.run(
+            task.task_id, argv,
+            timeout_seconds=task.failure_policy.timeout_seconds,
+            gpu_assigned=self._gpu_for(task),
+            attempt=attempt,
+        )
+        self.events.emit(
+            EventType.COMMAND_FINISHED, task_id=task.task_id,
+            exit_code=result.exit_code, timed_out=result.timed_out,
+            disk_aborted=result.disk_aborted,
+            truncated=result.truncated_stdout or result.truncated_stderr,
+        )
+        self.events.emit(EventType.VALIDATION_STARTED, task_id=task.task_id)
+        checks: list[CheckResult] = []
+        for out in task.outputs_expected:
+            for vname in task.validators:
+                checks.append(self.validators.run(vname, out, **validator_kwargs))
+        all_passed = bool(checks) and all(c.passed for c in checks)
+        self.events.emit(
+            EventType.VALIDATION_SUCCEEDED if all_passed else EventType.VALIDATION_FAILED,
+            task_id=task.task_id, checks=[c.to_dict() for c in checks],
+        )
+        return result, checks, all_passed
+
+    def _auto_degeneracy(
+        self, task: Task, degeneracy: science.DegeneracyReport | None
+    ) -> science.DegeneracyReport:
+        """Q4: a SUCCEEDED-but-degenerate output must never read as clean. If the
+        caller did not supply a degeneracy report, derive one from the outputs
+        (empty file / only gaps-N)."""
+        if degeneracy is not None:
+            return degeneracy
+        reasons: list[str] = []
+        for out in task.outputs_expected:
+            p = Path(out)
+            if p.exists() and p.is_file():
+                if p.stat().st_size == 0:
+                    reasons.append(f"output {p.name} is empty")
+                else:
+                    body = "".join(
+                        ln for ln in p.read_text(encoding="utf-8", errors="replace").splitlines()
+                        if not ln.startswith(">")
+                    )
+                    if body and set(body.upper()) <= {"N", "-", ".", "\n"}:
+                        reasons.append(f"output {p.name} is only gaps/N")
+        return science.DegeneracyReport(degenerate=bool(reasons), reasons=reasons)
 
     def run_task(
         self,
@@ -94,103 +170,87 @@ class TaskRunner:
 
         self.events.emit(EventType.TASK_CREATED, task_id=task.task_id, tool_id=task.tool_id)
 
-        # 1) approval gate (raises ApprovalError).
-        self.approval.check(task)
+        # Gates run BEFORE any lease/state change; their exceptions propagate as
+        # before (no lease to leak yet).
+        self.approval.check(task)                                  # ApprovalError
+        contract = self.tools.require_runnable(task.tool_id)       # Unregistered/ToolUnavailable
 
-        # 2) tool registry gate (raises Unregistered/ToolUnavailable). BEFORE any
-        #    state change or execution — this is the invariant that was missing.
-        contract = self.tools.require_runnable(task.tool_id)
-
-        # 1b) PENDING -> APPROVED.
         task.set_technical(TechnicalState.APPROVED)
         self.events.emit(EventType.TASK_APPROVED, task_id=task.task_id)
+        argv = self._build_argv(task, contract, bindings)
 
-        # 3) lease: APPROVED -> LEASED.
-        self.leases.acquire(task, self.worker_id, now=self._now())
-
-        # P1.9: derive + inject a deterministic seed if the task/tool wants one.
-        if task.seed_required and self.seeds is not None:
-            seed = self.seeds.derive(task.run_id, task.task_id)
-            bindings.setdefault("seed", seed)
-            if contract.seed_flag:
-                # appended below after argv render
-                pass
-
-        argv = task.render_argv(**bindings)
-        if task.seed_required and contract.seed_flag and self.seeds is not None:
-            argv = argv + [contract.seed_flag, str(bindings["seed"])]
-
-        # 4) LEASED -> RUNNING.
-        task.set_technical(TechnicalState.RUNNING)
-        self.events.emit(EventType.TASK_STARTED, task_id=task.task_id, attempt=task.retries + 1)
-        self.events.emit(EventType.COMMAND_STARTED, task_id=task.task_id, command=argv)
-
-        # 5) execute (argv-only, capped).
-        result: ExecutionResult = self.executor.run(
-            task.task_id, argv,
-            timeout_seconds=task.failure_policy.timeout_seconds,
-            gpu_assigned=("0" if task.resources.gpu else None),
-            attempt=task.retries + 1,
-        )
-        self.events.emit(
-            EventType.COMMAND_FINISHED, task_id=task.task_id,
-            exit_code=result.exit_code, timed_out=result.timed_out,
-            disk_aborted=result.disk_aborted,
-            truncated=result.truncated_stdout or result.truncated_stderr,
-        )
-
-        # 6) run ALL validators over expected outputs.
-        self.events.emit(EventType.VALIDATION_STARTED, task_id=task.task_id)
+        result: ExecutionResult | None = None
         checks: list[CheckResult] = []
-        for out in task.outputs_expected:
-            for vname in task.validators:
-                checks.append(self.validators.run(vname, out, **validator_kwargs))
-        all_passed = bool(checks) and all(c.passed for c in checks)
-        self.events.emit(
-            EventType.VALIDATION_SUCCEEDED if all_passed else EventType.VALIDATION_FAILED,
-            task_id=task.task_id,
-            checks=[c.to_dict() for c in checks],
-        )
+        all_passed = False
+        final = TechnicalState.FAILED_FATAL
+        policy = task.failure_policy
 
-        # 7) scientific interpretation (only the science layer sets sci state).
+        # P0.2 retry loop. P0.1 exception boundary wraps every attempt: any raise
+        # emits task_failed, releases the lease and leaves a TERMINAL state.
+        while True:
+            self.leases.acquire(task, self.worker_id, now=self._now())  # ->LEASED
+            try:
+                task.set_technical(TechnicalState.RUNNING)
+                result, checks, all_passed = self._attempt(
+                    task, argv, task.retries + 1, validator_kwargs
+                )
+                exec_ok = result.succeeded
+                if exec_ok and all_passed:
+                    task.set_technical(TechnicalState.SUCCEEDED)
+                    self.events.emit(EventType.TASK_SUCCEEDED, task_id=task.task_id)
+                    final = TechnicalState.SUCCEEDED
+                    break
+                # Failure path.
+                if not exec_ok:
+                    reason = (
+                        "disk_abort" if result.disk_aborted
+                        else "timeout" if result.timed_out
+                        else f"exit_code={result.exit_code}"
+                    )
+                    fatal = result.disk_aborted
+                else:
+                    reason = f"validators_failed={[c.name for c in checks if not c.passed]}"
+                    fatal = False
+                can_retry = (
+                    not fatal and policy.retryable and task.retries < policy.max_retries
+                )
+                self._to_failed(task, reason, fatal=not can_retry)
+                if not can_retry:
+                    final = TechnicalState.FAILED_FATAL
+                    break
+                # Retryable: FAILED_RETRYABLE -> REQUEUED, then loop re-leases.
+                task.retries += 1
+                task.set_technical(TechnicalState.REQUEUED)
+                self.events.emit(EventType.TASK_REQUEUED, task_id=task.task_id, attempt=task.retries)
+            except Exception as exc:  # P0.1: no exception escapes with a live lease
+                final = self._to_failed(task, f"exception:{type(exc).__name__}:{exc}", fatal=True)
+                self.events.emit(
+                    EventType.RESULT_INTERPRETATION_LIMITED, task_id=task.task_id,
+                    reason="execution raised; not biologically interpretable",
+                )
+                break
+            finally:
+                self.leases.release(task.task_id)
+
+        # Scientific interpretation (only the science layer sets sci state). Q4:
+        # auto-detect degeneracy so a clean-looking but degenerate output can't lie.
+        degen = self._auto_degeneracy(task, degeneracy) if final == TechnicalState.SUCCEEDED else degeneracy
         interp = science.build_interpretation(
-            checks,
-            statistical_checks=statistical_checks,
-            degeneracy=degeneracy,
-            negative=negative,
-            allowed=allowed,
-            limitations=limitations,
+            checks, statistical_checks=statistical_checks, degeneracy=degen,
+            negative=negative, allowed=allowed, limitations=limitations,
         )
         task.set_scientific(interp.scientific_state)
 
-        # 8) terminal technical state.
-        self.leases.release(task.task_id)
-        exec_ok = result.succeeded
-        if not exec_ok:
-            why = (
-                "disk_abort" if result.disk_aborted
-                else "timeout" if result.timed_out
-                else f"exit_code={result.exit_code}"
-            )
-            final = self._fail(task, why, fatal=result.disk_aborted)
-        elif not all_passed:
-            failed = [c.name for c in checks if not c.passed]
-            final = self._fail(task, f"validators_failed={failed}")
-        else:
-            task.set_technical(TechnicalState.SUCCEEDED)
-            self.events.emit(EventType.TASK_SUCCEEDED, task_id=task.task_id)
-            final = TechnicalState.SUCCEEDED
-
-        # 9) persist the result bundle.
         bundle = {
             "task_id": task.task_id,
+            "task_type": task.task_type,
+            "tool_id": task.tool_id,
             "status_technical": final.value,
             "status_scientific": task.status_scientific.value,
-            "execution": result.to_dict(),
+            "retries": task.retries,
+            "execution": result.to_dict() if result is not None else None,
             "validation": [c.to_dict() for c in checks],
             "interpretation": interp.to_dict(),
         }
-        (self.results_dir / f"{task.task_id}.validation.json").write_text(
-            json.dumps(bundle, indent=2, sort_keys=True, default=str), encoding="utf-8"
-        )
+        self._persist_bundle(task.task_id, bundle)
         return bundle
