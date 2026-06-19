@@ -123,9 +123,20 @@ def _cmd_demo_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_aggregate(args: argparse.Namespace) -> int:
+    from .aggregate import aggregate_run
+    out = aggregate_run(args.run_dir)
+    sys.stdout.write(json.dumps({"results_csv": str(out)}, indent=2) + "\n")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="harness", description="AI-assisted phylogenomics harness")
     sub = p.add_subparsers(dest="command", required=True)
+
+    pa = sub.add_parser("aggregate", help="aggregate a run's results into results.csv")
+    pa.add_argument("run_dir")
+    pa.set_defaults(func=_cmd_aggregate)
 
     pe = sub.add_parser("capture-env", help="capture the environment")
     pe.add_argument("--out", default="runs/env_snapshot")

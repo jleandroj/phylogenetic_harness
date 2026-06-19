@@ -241,13 +241,27 @@ class TaskRunner:
         )
         task.set_scientific(interp.scientific_state)
 
+        # Checksum the produced outputs so downstream aggregation/diff is provenance-
+        # complete (Q4/Q5) and a result can be compared byte-for-byte across runs.
+        from . import ids
+        outputs = []
+        for out in task.outputs_expected:
+            p = Path(out)
+            if p.exists() and p.is_file():
+                outputs.append({"path": str(p), "sha256": "sha256:" + ids.sha256_file(p)})
+            else:
+                outputs.append({"path": str(out), "sha256": None})
+
         bundle = {
             "task_id": task.task_id,
             "task_type": task.task_type,
             "tool_id": task.tool_id,
             "status_technical": final.value,
             "status_scientific": task.status_scientific.value,
+            "degenerate": bool(degen.degenerate) if degen is not None else False,
+            "validators_passed": all_passed,
             "retries": task.retries,
+            "outputs": outputs,
             "execution": result.to_dict() if result is not None else None,
             "validation": [c.to_dict() for c in checks],
             "interpretation": interp.to_dict(),
