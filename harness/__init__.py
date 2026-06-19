@@ -34,6 +34,7 @@ from . import (  # noqa: F401
     science,
     seeds,
     states,
+    task_types,
     tasks,
     taskstore,
     tools,
