@@ -1,0 +1,38 @@
+# Example dataset manifest (spec §24.1). No analysis runs without one of these.
+dataset_id: "primates_test_v1"
+dataset_type: "multi_genome"
+scientific_question: "comparative phylogenomics of great apes"
+created_at: "2026-06-19T00:00:00-04:00"
+created_by: "agent"
+inputs:
+  - sample_id: "homo_sapiens"
+    path: "genomes/homo_sapiens.fa"
+    format: "FASTA"
+    source: "local"
+    assembly_level: "chromosome"
+    quality_status: "validated"
+    checksum: null          # filled by compute_checksums()
+    size_bytes: null
+    notes: "reference assembly"
+  - sample_id: "pan_paniscus"
+    path: "genomes/pan_paniscus.fa"
+    format: "FASTA"
+    source: "local"
+    assembly_level: "scaffold"
+    quality_status: "limited"   # low quality MUST be marked, never hidden
+    notes: "scaffold-level; treat local topology with caution"
+taxa:
+  include:
+    - "homo_sapiens"
+    - "pan_paniscus"
+    - "pan_troglodytes"
+  exclude:
+    - taxon: "gorilla_gorilla"
+      reason: "assembly unavailable at required quality"
+outgroups:
+  selected: ["pongo_abelii"]
+  alternatives: ["macaca_mulatta", "nomascus_leucogenys"]
+limitations:
+  - "ILS may affect local topology in great apes"
+  - "assembly quality differs between taxa"
+  - "outgroup choice can change rooting"

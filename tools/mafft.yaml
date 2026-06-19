@@ -1,0 +1,13 @@
+tool_id: mafft
+tool_name: MAFFT
+version_command: "mafft --version"
+requires_gpu: false
+requires_network: false
+input_formats: [FASTA]
+output_formats: [FASTA, Clustal]
+risks:
+  - alignment quality degrades on divergent / low-quality input
+  - default parameters may not suit genome-scale input
+validators:
+  - exit_code_zero
+  - fasta_valid

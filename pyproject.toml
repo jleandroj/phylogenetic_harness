@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phylogenetic-harness"
+version = "0.1.0"
+description = "Auditable, sceptical harness for AI-assisted phylogenomics"
+requires-python = ">=3.10"
+dependencies = ["pyyaml>=6"]
+
+[project.scripts]
+harness = "harness.cli:main"
+
+[tool.setuptools]
+packages = ["harness"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

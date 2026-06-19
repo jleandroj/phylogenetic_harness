@@ -1,0 +1,26 @@
+# Run outputs are reproducible artefacts, not source. Never commit them.
+runs/
+outputs/
+
+# Original scientific data must never be committed (size + provenance). The
+# harness only ever writes under runs/; raw data lives outside the repo.
+data/
+genomes/
+*.fa
+*.fasta
+*.fq
+*.fastq
+*.bam
+*.cram
+*.vcf
+*.vcf.gz
+*.bcf
+*.hal
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/

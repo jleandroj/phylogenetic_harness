@@ -1,0 +1,17 @@
+# Registered but expected to be UNAVAILABLE on hosts without iqtree2 installed.
+# The registry will set detected_version=null, available=false. This documents
+# the registered-but-unavailable case (spec §5) — the harness refuses to run it
+# via require_runnable() rather than pretending it exists.
+tool_id: iqtree2
+tool_name: IQ-TREE 2
+version_command: "iqtree2 --version"
+requires_gpu: false
+requires_network: false
+input_formats: [FASTA, PHYLIP, Nexus]
+output_formats: [Newick, Nexus]
+risks:
+  - model selection strongly affects topology and support
+  - bootstrap support is not a guarantee of biological correctness
+validators:
+  - exit_code_zero
+  - newick_valid

@@ -1,0 +1,14 @@
+tool_id: samtools
+tool_name: samtools
+version_command: "samtools --version"
+requires_gpu: false
+requires_network: false
+input_formats: [FASTA, BAM, CRAM, SAM]
+output_formats: [FAI, BAM, CRAM, SAM, VCF]
+risks:
+  - version-dependent behavior
+  - faidx rewrites index next to the original file
+validators:
+  - exit_code_zero
+  - file_exists
+  - file_nonempty

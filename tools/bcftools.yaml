@@ -1,0 +1,12 @@
+tool_id: bcftools
+tool_name: bcftools
+version_command: "bcftools --version"
+requires_gpu: false
+requires_network: false
+input_formats: [VCF, BCF]
+output_formats: [VCF, BCF]
+risks:
+  - contig naming must match the reference
+validators:
+  - exit_code_zero
+  - vcf_header_valid
