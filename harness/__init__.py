@@ -27,6 +27,7 @@ from . import (  # noqa: F401
     redaction,
     report,
     resources,
+    resume,
     run,
     runner,
     scheduler,

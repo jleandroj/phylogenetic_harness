@@ -130,6 +130,13 @@ def _cmd_aggregate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_resume(args: argparse.Namespace) -> int:
+    from .resume import resume_run
+    summary = resume_run(args.run_dir)
+    sys.stdout.write(json.dumps(summary, indent=2) + "\n")
+    return 0
+
+
 def _cmd_replay(args: argparse.Namespace) -> int:
     from .manifest import replay
     report = replay(args.run_dir)
@@ -156,6 +163,10 @@ def build_parser() -> argparse.ArgumentParser:
     pa = sub.add_parser("aggregate", help="aggregate a run's results into results.csv")
     pa.add_argument("run_dir")
     pa.set_defaults(func=_cmd_aggregate)
+
+    prs = sub.add_parser("resume", help="resume a crashed run; finish unfinished tasks")
+    prs.add_argument("run_dir")
+    prs.set_defaults(func=_cmd_resume)
 
     pr = sub.add_parser("replay", help="re-execute a frozen run and report drift")
     pr.add_argument("run_dir")
