@@ -226,10 +226,13 @@ def _cmd_pipeline(args: argparse.Namespace) -> int:
         species_tree=not args.no_species_tree,
     )
     aggregate_run(run.dir)
+    from .bio_report import generate_pipeline_report
+    report_paths = generate_pipeline_report(run.dir)
     run.finish()
     sp = out["species_tree"] or {}
     sys.stdout.write(json.dumps({
         "run_dir": str(run.dir),
+        "report": report_paths,
         "model_selection": out["model_selection"],
         "genes": {n: {"method": g.get("method"), "model": g.get("model"),
                       "tree": (g.get("tree") or {}).get("status_technical"),

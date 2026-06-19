@@ -19,6 +19,7 @@ from . import (  # noqa: F401,E402
     aggregate,
     approval,
     bio,
+    bio_report,
     clock,
     datasets,
     diff,
