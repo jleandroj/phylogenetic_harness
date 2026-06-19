@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from . import hardware
+from .redaction import redact, redact_env
 
 # (label, argv). Best-effort; failures are captured, not raised.
 PROBE_COMMANDS: list[tuple[str, list[str]]] = [
@@ -101,6 +102,11 @@ def capture_environment(
     log_lines: list[str] = []
     for label, argv in PROBE_COMMANDS:
         res = _run(argv)
+        # Redact secrets that a probe command might print (audit P1.10).
+        if res.get("stdout"):
+            res["stdout"] = redact(res["stdout"])
+        if res.get("stderr"):
+            res["stderr"] = redact(res["stderr"])
         commands[label] = res
         log_lines.append(f"### {label}: {' '.join(argv)}")
         log_lines.append(f"# present={res['present']} exit={res['exit_code']}")
@@ -139,6 +145,8 @@ def capture_environment(
         "path_env": os.environ.get("PATH"),
         "ld_library_path": os.environ.get("LD_LIBRARY_PATH"),
         "conda_default_env": os.environ.get("CONDA_DEFAULT_ENV"),
+        # Full env is recorded but with sensitive values masked (audit P1.10).
+        "environment_variables": redact_env(dict(os.environ)),
         "commands": commands,
         "tools": tools,
         "hardware": hw,

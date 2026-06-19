@@ -1,38 +1,90 @@
-"""Command executors (spec §6.1, §24.4, §24.10).
+"""Command executors (spec §6.1, §24.4, §24.10; audit P0.2/P0.4/P1.6/P1.7/P1.10).
 
-LocalExecutor runs a command as a subprocess, capturing stdout and stderr to
-FILES (not just memory), exit code, wall time and child resource usage. The
-spec's GPU rules are honoured structurally: we never import CUDA in the parent,
-we use the ``spawn`` multiprocessing context for any Python child fan-out, and
-the assigned GPU is recorded per execution.
+LocalExecutor runs a command as a subprocess with these hard guarantees:
 
-DryRunExecutor records the intended command without running it.
-AuditOnlyExecutor refuses to execute and only verifies the task is auditable.
-SLURMExecutor / GPUExecutor are declared interfaces, intentionally not
-implemented in v1 (they raise NotImplementedError).
+  * ARGV ONLY, never a shell (audit P0.2). ``command`` must be ``list[str]``;
+    a string raises. This closes the command-injection hole — a param value can
+    never be interpreted as shell syntax.
+  * stdout/stderr are streamed to FILES through a byte cap (audit P0.4): output
+    beyond the cap is dropped with a ``[TRUNCATED]`` marker and ``truncated_*``
+    is set, so a noisy tool cannot exhaust the disk.
+  * a pre-flight disk-free check aborts before starting if free space is below a
+    threshold (audit P0.4).
+  * peak RSS is sampled per child PID (audit P1.6) and logs are named per attempt
+    (audit P1.7), so retries never clobber prior evidence.
+  * captured output is passed through secret redaction (audit P1.10).
+
+The spec's GPU rules are honoured structurally: CUDA is never initialised in the
+parent, the ``spawn`` context is used for any Python child fan-out, and the
+assigned GPU is recorded per execution.
 """
 from __future__ import annotations
 
 import multiprocessing
 import os
 import subprocess
-from dataclasses import dataclass, field
+import threading
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import clock
-from .resources import ChildResourceProbe, ResourceUsage
+from .redaction import redact as _default_redact
+from .resources import ChildResourceProbe, PidSampler, ResourceUsage
 
-# A spawn context is the safe default when CUDA may be involved downstream
-# (spec §24.10: no fork with CUDA, do not init CUDA in the parent). We expose it
-# so any Python child fan-out uses spawn, never the default fork on Linux.
 SPAWN_CONTEXT = multiprocessing.get_context("spawn")
+
+DEFAULT_OUTPUT_CAP_BYTES = 10 * 1024 * 1024      # 10 MiB per stream
+DEFAULT_MIN_FREE_BYTES = 100 * 1024 * 1024       # refuse to start under 100 MiB free
+_CHUNK = 65536
+
+
+class ShellCommandRejected(TypeError):
+    """Raised when a string command is passed (shell execution is forbidden)."""
+
+
+def _emit_line(out, line: bytes, written: int, cap: int, truncated: bool,
+               redactor: Callable[[str], str]) -> tuple[int, bool]:
+    if truncated or written >= cap:
+        return written, True
+    text = line.decode("utf-8", errors="replace")
+    data = redactor(text).encode("utf-8", errors="replace")
+    out.write(data)
+    return written + len(data), False
+
+
+def _pump(src, dst_path: Path, cap: int, redactor: Callable[[str], str]) -> bool:
+    """Drain ``src`` into ``dst_path`` line by line up to ``cap`` bytes.
+
+    Always fully drains the pipe (so the child never blocks), but stops writing
+    after the cap. Memory is bounded by the cap plus one partial line.
+    """
+    written = 0
+    truncated = False
+    buf = b""
+    with open(dst_path, "wb") as out:
+        while True:
+            chunk = src.read(_CHUNK)
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                written, truncated = _emit_line(out, line + b"\n", written, cap, truncated, redactor)
+            if len(buf) >= _CHUNK:  # very long line with no newline yet
+                written, truncated = _emit_line(out, buf, written, cap, truncated, redactor)
+                buf = b""
+        if buf:
+            written, truncated = _emit_line(out, buf, written, cap, truncated, redactor)
+        if truncated:
+            out.write(f"\n[TRUNCATED at {cap} bytes]\n".encode("utf-8"))
+    return truncated
 
 
 @dataclass
 class ExecutionResult:
     task_id: str
-    command: str
+    command: list[str]
     exit_code: int | None
     started_at: str | None
     finished_at: str | None
@@ -40,20 +92,30 @@ class ExecutionResult:
     stdout_path: str | None
     stderr_path: str | None
     timed_out: bool = False
+    truncated_stdout: bool = False
+    truncated_stderr: bool = False
+    disk_aborted: bool = False
     resources: ResourceUsage | None = None
     gpu_assigned: str | None = None
     cwd: str | None = None
     pid: int | None = None
+    attempt: int = 1
     error: str | None = None
 
     @property
     def succeeded(self) -> bool:
-        return self.exit_code == 0 and not self.timed_out and self.error is None
+        return (
+            self.exit_code == 0
+            and not self.timed_out
+            and not self.disk_aborted
+            and self.error is None
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "task_id": self.task_id,
-            "command": self.command,
+            "command": list(self.command),
+            "command_display": " ".join(self.command),
             "exit_code": self.exit_code,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -61,13 +123,30 @@ class ExecutionResult:
             "stdout_path": self.stdout_path,
             "stderr_path": self.stderr_path,
             "timed_out": self.timed_out,
+            "truncated_stdout": self.truncated_stdout,
+            "truncated_stderr": self.truncated_stderr,
+            "disk_aborted": self.disk_aborted,
             "gpu_assigned": self.gpu_assigned,
             "cwd": self.cwd,
             "pid": self.pid,
+            "attempt": self.attempt,
             "error": self.error,
             "succeeded": self.succeeded,
             "resources": self.resources.to_dict() if self.resources else None,
         }
+
+
+def _require_argv(command: Any) -> list[str]:
+    if isinstance(command, str):
+        raise ShellCommandRejected(
+            "LocalExecutor requires an argv list, not a string (shell execution is forbidden; "
+            "build a list[str] so params cannot be interpreted as shell syntax)"
+        )
+    if not isinstance(command, list) or not all(isinstance(p, str) for p in command):
+        raise ShellCommandRejected("command must be a list[str] (argv)")
+    if not command:
+        raise ShellCommandRejected("command argv is empty")
+    return command
 
 
 class LocalExecutor:
@@ -79,28 +158,50 @@ class LocalExecutor:
         *,
         clock_fn=clock.iso_now,
         disk_path: str | os.PathLike[str] = ".",
+        output_cap_bytes: int = DEFAULT_OUTPUT_CAP_BYTES,
+        min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
+        redactor: Callable[[str], str] = _default_redact,
     ) -> None:
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self._clock = clock_fn
         self.disk_path = disk_path
+        self.output_cap_bytes = output_cap_bytes
+        self.min_free_bytes = min_free_bytes
+        self.redactor = redactor
+
+    def _log_paths(self, task_id: str, attempt: int) -> tuple[Path, Path]:
+        stem = f"{task_id}.attempt{attempt}"
+        return self.log_dir / f"{stem}.stdout.log", self.log_dir / f"{stem}.stderr.log"
 
     def run(
         self,
         task_id: str,
-        command: str | list[str],
+        command: list[str],
         *,
         timeout_seconds: int | None = None,
         cwd: str | os.PathLike[str] | None = None,
         env: dict[str, str] | None = None,
         gpu_assigned: str | None = None,
+        attempt: int = 1,
     ) -> ExecutionResult:
-        stdout_path = self.log_dir / f"{task_id}.stdout.log"
-        stderr_path = self.log_dir / f"{task_id}.stderr.log"
-        cmd_str = command if isinstance(command, str) else " ".join(command)
+        argv = _require_argv(command)
+        stdout_path, stderr_path = self._log_paths(task_id, attempt)
 
-        # Build child env: never initialise CUDA in the parent; pin the assigned
-        # GPU for the child via CUDA_VISIBLE_DEVICES (spec §24.10).
+        # Pre-flight disk check (audit P0.4): refuse to start if nearly full.
+        import shutil
+        try:
+            free = shutil.disk_usage(self.disk_path).free
+        except OSError:
+            free = None
+        if free is not None and free < self.min_free_bytes:
+            ts = self._clock()
+            return ExecutionResult(
+                task_id=task_id, command=argv, exit_code=None, started_at=ts, finished_at=ts,
+                wall_seconds=0.0, stdout_path=None, stderr_path=None, disk_aborted=True,
+                attempt=attempt, error=f"disk_abort: {free} bytes free < {self.min_free_bytes} threshold",
+            )
+
         child_env = dict(os.environ if env is None else env)
         if gpu_assigned is not None:
             child_env["CUDA_VISIBLE_DEVICES"] = str(gpu_assigned)
@@ -114,95 +215,83 @@ class LocalExecutor:
         error = None
         exit_code: int | None = None
         pid: int | None = None
+        truncated_out = truncated_err = False
+        sampler: PidSampler | None = None
         try:
-            with open(stdout_path, "w", encoding="utf-8") as out, open(
-                stderr_path, "w", encoding="utf-8"
-            ) as err:
-                proc = subprocess.Popen(
-                    command,
-                    shell=isinstance(command, str),
-                    stdout=out,
-                    stderr=err,
-                    cwd=str(cwd) if cwd else None,
-                    env=child_env,
-                )
-                pid = proc.pid
-                try:
-                    exit_code = proc.wait(timeout=timeout_seconds)
-                except subprocess.TimeoutExpired:
-                    timed_out = True
-                    proc.kill()
-                    proc.wait()
-                    exit_code = proc.returncode
+            proc = subprocess.Popen(
+                argv, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                cwd=str(cwd) if cwd else None, env=child_env, bufsize=0,
+            )
+            pid = proc.pid
+            sampler = PidSampler(pid)
+            sampler.start()
+            holder: dict[str, bool] = {}
+            t_out = threading.Thread(
+                target=lambda: holder.__setitem__(
+                    "out", _pump(proc.stdout, stdout_path, self.output_cap_bytes, self.redactor)))
+            t_err = threading.Thread(
+                target=lambda: holder.__setitem__(
+                    "err", _pump(proc.stderr, stderr_path, self.output_cap_bytes, self.redactor)))
+            t_out.start()
+            t_err.start()
+            try:
+                exit_code = proc.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                proc.kill()
+                exit_code = proc.wait()
+            t_out.join()
+            t_err.join()
+            truncated_out = holder.get("out", False)
+            truncated_err = holder.get("err", False)
         except (OSError, ValueError) as exc:
             error = str(exc)
+        finally:
+            if sampler is not None:
+                sampler.stop()
+                sampler.join(timeout=1.0)
 
         wall = clock.monotonic() - t0
-        usage = probe.stop(wall_seconds=wall)
+        usage = probe.stop(wall_seconds=wall, sampler=sampler)
         finished_at = self._clock()
 
         return ExecutionResult(
-            task_id=task_id,
-            command=cmd_str,
-            exit_code=exit_code,
-            started_at=started_at,
-            finished_at=finished_at,
-            wall_seconds=round(wall, 4),
-            stdout_path=str(stdout_path),
-            stderr_path=str(stderr_path),
-            timed_out=timed_out,
-            resources=usage,
-            gpu_assigned=gpu_assigned,
-            cwd=str(cwd) if cwd else str(Path.cwd()),
-            pid=pid,
-            error=error,
+            task_id=task_id, command=argv, exit_code=exit_code, started_at=started_at,
+            finished_at=finished_at, wall_seconds=round(wall, 4), stdout_path=str(stdout_path),
+            stderr_path=str(stderr_path), timed_out=timed_out, truncated_stdout=truncated_out,
+            truncated_stderr=truncated_err, resources=usage, gpu_assigned=gpu_assigned,
+            cwd=str(cwd) if cwd else str(Path.cwd()), pid=pid, attempt=attempt, error=error,
         )
 
 
-class DryRunExecutor:
+class _NonExecutingExecutor:
+    """Base for executors that record intent without running anything."""
+
+    name = "base"
+    _why = ""
+
+    def __init__(self, log_dir: str | os.PathLike[str], *, clock_fn=clock.iso_now, **_: Any) -> None:
+        self.log_dir = Path(log_dir)
+        self._clock = clock_fn
+
+    def run(self, task_id: str, command: list[str], *, attempt: int = 1, **_: Any) -> ExecutionResult:
+        argv = command if isinstance(command, list) else [str(command)]
+        ts = self._clock()
+        return ExecutionResult(
+            task_id=task_id, command=argv, exit_code=None, started_at=ts, finished_at=ts,
+            wall_seconds=0.0, stdout_path=None, stderr_path=None, attempt=attempt,
+            error=f"{self.name}: {self._why}",
+        )
+
+
+class DryRunExecutor(_NonExecutingExecutor):
     name = "dry_run"
-
-    def __init__(self, log_dir: str | os.PathLike[str], *, clock_fn=clock.iso_now) -> None:
-        self.log_dir = Path(log_dir)
-        self._clock = clock_fn
-
-    def run(self, task_id: str, command: str | list[str], **_: Any) -> ExecutionResult:
-        cmd_str = command if isinstance(command, str) else " ".join(command)
-        ts = self._clock()
-        return ExecutionResult(
-            task_id=task_id,
-            command=cmd_str,
-            exit_code=None,
-            started_at=ts,
-            finished_at=ts,
-            wall_seconds=0.0,
-            stdout_path=None,
-            stderr_path=None,
-            error="dry_run: command not executed",
-        )
+    _why = "command not executed"
 
 
-class AuditOnlyExecutor:
+class AuditOnlyExecutor(_NonExecutingExecutor):
     name = "audit_only"
-
-    def __init__(self, log_dir: str | os.PathLike[str], *, clock_fn=clock.iso_now) -> None:
-        self.log_dir = Path(log_dir)
-        self._clock = clock_fn
-
-    def run(self, task_id: str, command: str | list[str], **_: Any) -> ExecutionResult:
-        cmd_str = command if isinstance(command, str) else " ".join(command)
-        ts = self._clock()
-        return ExecutionResult(
-            task_id=task_id,
-            command=cmd_str,
-            exit_code=None,
-            started_at=ts,
-            finished_at=ts,
-            wall_seconds=0.0,
-            stdout_path=None,
-            stderr_path=None,
-            error="audit_only: execution disabled",
-        )
+    _why = "execution disabled"
 
 
 class SLURMExecutor:
@@ -236,4 +325,6 @@ def get_executor(mode: str, log_dir: str | os.PathLike[str], **kw: Any):
     cls = table[mode]
     if cls in (SLURMExecutor, GPUExecutor):
         return cls()
+    if cls in (DryRunExecutor, AuditOnlyExecutor):
+        return cls(log_dir, clock_fn=kw.get("clock_fn", clock.iso_now))
     return cls(log_dir, **kw)

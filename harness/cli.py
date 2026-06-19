@@ -17,7 +17,6 @@ from .datasets import DatasetManifest
 from .environment import capture_environment
 from .report import ReportGenerator
 from .run import Run, RunConfig, new_run_id
-from .science import build_interpretation
 from .tasks import FailurePolicy, ResourceRequest, Task
 
 
@@ -48,49 +47,60 @@ def _cmd_demo_run(args: argparse.Namespace) -> int:
     run = Run(cfg)
     run.capture_environment()
     tools_dir = Path(__file__).resolve().parent.parent / "tools"
-    if tools_dir.exists():
-        run.load_tools(tools_dir)
+    run.load_tools(tools_dir)
+    run.write_tools_lock()
 
-    # A trivial, registered, harmless task: print samtools version (or echo).
-    tool_id = "samtools" if "samtools" in run.tools.all() and run.tools.get("samtools").available else None
-    if tool_id:
-        command = "samtools --version"
+    results = run.dir / "results"
+    results.mkdir(parents=True, exist_ok=True)
+
+    # Build a REAL task on a REGISTERED, AVAILABLE tool. Prefer samtools faidx on
+    # a tiny FASTA; otherwise cp. No phantom tools, no shell redirection.
+    if "samtools" in run.tools.all() and run.tools.get("samtools").available:
+        fasta = results / "demo.fa"
+        fasta.write_text(">seqA\nACGTACGTACGT\n>seqB\nTTTTACGTAAAA\n", encoding="utf-8")
+        tool_id, argv = "samtools", ["samtools", "faidx", str(fasta)]
+        out_file = str(fasta) + ".fai"
     else:
-        tool_id = "coreutils-echo"
-        command = "echo harness-demo"
+        src = results / "src.txt"
+        src.write_text("harness-demo\n", encoding="utf-8")
+        out_file = str(results / "demo.txt")
+        tool_id, argv = "cp", ["cp", str(src), out_file]
 
-    out_file = run.dir / "results" / "demo.txt"
     task = Task(
         task_id=f"{cfg.run_id}.task_000001",
         run_id=cfg.run_id,
         task_type="demo",
         tool_id=tool_id,
-        command_template=command + " > {out}",
-        inputs=["<none: version probe>"],
-        outputs_expected=[str(out_file)],
+        command_template=" ".join(argv),
+        command_argv=argv,
+        inputs=[argv[-1]],
+        outputs_expected=[out_file],
         validators=["file_exists", "file_nonempty"],
         resources=ResourceRequest(cpus=1, memory_gb=1),
         failure_policy=FailurePolicy(timeout_seconds=60),
     )
-    run.approval.check(task)  # harmless task: no approval required
 
-    result = run.executor.run(task.task_id, task.render_command(out=out_file), timeout_seconds=60)
-    checks = run.validators.run_many(task.validators, out_file)
-
-    interp = build_interpretation(
-        checks,
-        allowed=["The command executed and produced a non-empty output file."],
+    # THE ONLY execution path: the TaskRunner enforces gate + state + validators.
+    runner = run.build_runner()
+    bundle = runner.run_task(
+        task,
+        allowed=["The registered tool executed and produced a non-empty output file."],
         limitations=["This demo proves auditability only, not any biological claim."],
     )
 
     sections = ReportGenerator.empty_sections()
-    sections["1. What was executed"] = [f"task {task.task_id}: `{result.command}` (exit={result.exit_code})"]
-    sections["6. What was technically valid"] = [f"{c.name}: {c.status}" for c in checks]
-    sections["7. What was biologically interpretable"] = [
-        f"scientific_state={interp.scientific_state.value}; confidence={interp.confidence}"
+    sections["1. What was executed"] = [
+        f"task {task.task_id}: `{' '.join(argv)}` -> technical={bundle['status_technical']}"
     ]
-    sections["8. What CANNOT be concluded"] = interp.interpretation_not_allowed
-    sections["9. Resources used"] = [json.dumps(result.resources.to_dict()) if result.resources else "n/a"]
+    sections["6. What was technically valid"] = [
+        f"{c['name']}: {c['status']}" for c in bundle["validation"]
+    ]
+    sections["7. What was biologically interpretable"] = [
+        f"scientific_state={bundle['status_scientific']}; "
+        f"confidence={bundle['interpretation']['confidence']}"
+    ]
+    sections["8. What CANNOT be concluded"] = bundle["interpretation"]["interpretation_not_allowed"]
+    sections["9. Resources used"] = [json.dumps(bundle["execution"].get("resources"))]
     sections["10. Software / versions used"] = [
         f"{tid}: {c.detected_version} (available={c.available})" for tid, c in run.tools.all().items()
     ]
@@ -99,15 +109,17 @@ def _cmd_demo_run(args: argparse.Namespace) -> int:
 
     paths = run.report.generate({
         "run_id": cfg.run_id,
-        "summary": "Demo run exercising the auditable core end-to-end.",
+        "summary": "Demo run exercising the auditable core end-to-end via TaskRunner.",
         "scientific_question": "none (infrastructure smoke test)",
         "sections": sections,
-        "interpretation": interp.to_dict(),
-        "execution": result.to_dict(),
+        "bundle": bundle,
     })
     run.finish()
-    sys.stdout.write(json.dumps({"run_dir": str(run.dir), "report": paths,
-                                 "scientific_state": interp.scientific_state.value}, indent=2) + "\n")
+    sys.stdout.write(json.dumps({
+        "run_dir": str(run.dir), "report": paths,
+        "technical_state": bundle["status_technical"],
+        "scientific_state": bundle["status_scientific"],
+    }, indent=2) + "\n")
     return 0
 
 

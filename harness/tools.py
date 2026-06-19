@@ -38,6 +38,8 @@ class ToolContract:
     validators: list[str] = field(default_factory=list)
     container: str | None = None
     environment: str | None = None
+    # CLI flag this tool uses to accept a seed (audit P1.9), e.g. "--seed".
+    seed_flag: str | None = None
     # Filled by detect().
     executable_path: str | None = None
     detected_version: str | None = None
@@ -60,6 +62,7 @@ class ToolContract:
             validators=list(d.get("validators", [])),
             container=d.get("container"),
             environment=d.get("environment"),
+            seed_flag=d.get("seed_flag"),
         )
 
     def detect(self) -> "ToolContract":
@@ -98,6 +101,7 @@ class ToolContract:
             "validators": self.validators,
             "container": self.container,
             "environment": self.environment,
+            "seed_flag": self.seed_flag,
             "executable_path": self.executable_path,
             "detected_version": self.detected_version,
             "available": self.available,

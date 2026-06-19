@@ -93,8 +93,16 @@ def test_technical_failure_not_interpretable():
     assert interp.scientific_state == ScientificState.NOT_BIOLOGICALLY_INTERPRETABLE
 
 
-def test_statistical_support_enables_interpretability():
+def test_single_statistical_check_is_not_enough():
+    # Audit P1.11: one passing statistical check must NOT reach interpretable.
     interp = build_interpretation([passed()], statistical_checks=[passed("bootstrap")])
+    assert interp.scientific_state != ScientificState.BIOLOGICALLY_INTERPRETABLE
+
+
+def test_two_statistical_evidences_enable_interpretability():
+    interp = build_interpretation(
+        [passed()], statistical_checks=[passed("bootstrap"), passed("gene_concordance")]
+    )
     assert interp.scientific_state == ScientificState.BIOLOGICALLY_INTERPRETABLE
     assert interp.confidence == "medium"
 

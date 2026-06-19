@@ -195,12 +195,15 @@ def build_interpretation(
     allowed: Sequence[str] | None = None,
     extra_not_allowed: Sequence[str] | None = None,
     limitations: Sequence[str] | None = None,
+    min_statistical_evidence: int = 2,
 ) -> Interpretation:
     """Assemble a full interpretation from validator results and evidence flags.
 
     The biological level NEVER passes off the back of technical checks alone: it
-    is at most LIMITED unless explicit biological evidence is supplied via the
-    statistical level and the absence of degeneracy/negativity.
+    is at most LIMITED unless explicit biological evidence is supplied. A result
+    is only BIOLOGICALLY_INTERPRETABLE when at least ``min_statistical_evidence``
+    (default 2, audit P1.11) independent statistical checks pass AND there is no
+    degeneracy or negativity. A single passing check is NOT enough.
     """
     tech_status = "PASSED" if all(c.passed for c in technical_checks) else "FAILED"
     technical = LevelVerdict(tech_status, [c.to_dict() for c in technical_checks])
@@ -240,9 +243,12 @@ def build_interpretation(
         biological = LevelVerdict("LIMITED", [{"name": "negative_result", "status": "LIMITED",
                                               "detail": negative.category.value}])
         confidence = "low"
-    elif statistical.status == "PASSED":
-        # Technical + statistical support present: interpretable, but biology
-        # still bounded by standing prohibitions.
+    elif (
+        statistical.status == "PASSED"
+        and sum(1 for c in (statistical_checks or []) if c.passed) >= min_statistical_evidence
+    ):
+        # Technical + >=N independent statistical evidences: interpretable, but
+        # biology still bounded by standing prohibitions.
         sci = ScientificState.BIOLOGICALLY_INTERPRETABLE
         biological = LevelVerdict("PASSED", [])
         confidence = "medium"

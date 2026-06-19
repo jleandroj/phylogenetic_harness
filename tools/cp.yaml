@@ -1,0 +1,15 @@
+# GNU coreutils 'cp'. Used by the demo when samtools is unavailable, so the demo
+# always exercises a REAL, registered, available tool — never a phantom.
+tool_id: cp
+tool_name: cp (coreutils)
+version_command: "cp --version"
+requires_gpu: false
+requires_network: false
+input_formats: [ANY]
+output_formats: [ANY]
+risks:
+  - can overwrite an existing destination (approval-gated when overwrite=true)
+validators:
+  - exit_code_zero
+  - file_exists
+  - file_nonempty

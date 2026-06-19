@@ -7,6 +7,7 @@ state-machine guard in ``harness.states``.
 """
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -63,6 +64,10 @@ class Task:
     requires_approval: bool = False
     seed_required: bool = False
     params: dict[str, Any] = field(default_factory=dict)
+    # Canonical argv (audit P0.2). When empty it is derived from command_template
+    # via shlex.split + per-element formatting, which keeps single-string
+    # templates usable while guaranteeing param values stay single argv elements.
+    command_argv: list[str] = field(default_factory=list)
     # Mutable state.
     status_technical: TechnicalState = TechnicalState.PENDING
     status_scientific: ScientificState = field(default_factory=default_scientific_state)
@@ -100,8 +105,20 @@ class Task:
         return new
 
     def render_command(self, **bindings: Any) -> str:
+        """Human-readable command string. For DISPLAY/logs only — never executed."""
         ctx = {**self.params, **bindings}
         return self.command_template.format(**ctx)
+
+    def render_argv(self, **bindings: Any) -> list[str]:
+        """Build the argv list for execution (audit P0.2).
+
+        Each element is formatted INDEPENDENTLY after tokenisation, so a value
+        like ``"; rm -rf ~"`` becomes one literal argv element and can never be
+        interpreted as shell syntax. No shell is ever involved.
+        """
+        ctx = {**self.params, **bindings}
+        base = self.command_argv or shlex.split(self.command_template)
+        return [part.format(**ctx) for part in base]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -110,6 +127,7 @@ class Task:
             "task_type": self.task_type,
             "tool_id": self.tool_id,
             "command_template": self.command_template,
+            "command_argv": self.command_argv,
             "inputs": self.inputs,
             "outputs_expected": self.outputs_expected,
             "validators": self.validators,

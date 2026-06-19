@@ -17,8 +17,10 @@ from .approval import ApprovalGate
 from .environment import capture_environment
 from .events import EventStore, EventType
 from .executor import get_executor
+from .leases import LeaseManager
 from .logging_json import JsonLogger
 from .report import ReportGenerator
+from .runner import TaskRunner
 from .seeds import SeedManager
 from .tools import ToolRegistry
 from .validators import ValidatorRegistry
@@ -87,7 +89,9 @@ class Run:
             config.executor if config.mode != "dry_run" else "dry_run",
             self.dir / "logs",
             clock_fn=clock_fn,
+            disk_path=self.dir,
         )
+        self.leases = LeaseManager(events=self.events)
         self.report = ReportGenerator(self.dir)
 
         self.events.emit(
@@ -116,6 +120,29 @@ class Run:
                 available=contract.available,
                 version=contract.detected_version,
             )
+
+    def build_runner(self, worker_id: str = "worker-0") -> TaskRunner:
+        """The only sanctioned way to execute tasks in this run (audit P0.1)."""
+        return TaskRunner(
+            events=self.events,
+            tools=self.tools,
+            validators=self.validators,
+            approval=self.approval,
+            executor=self.executor,
+            leases=self.leases,
+            results_dir=self.dir / "results",
+            seeds=self.seeds,
+            worker_id=worker_id,
+            clock_fn=clock.monotonic,
+        )
+
+    def write_tools_lock(self) -> Path:
+        """Freeze detected tool versions (audit P1.9)."""
+        lock = {tid: {"version": c.detected_version, "available": c.available, "path": c.executable_path}
+                for tid, c in self.tools.all().items()}
+        path = self.dir / "TOOLS.lock.json"
+        path.write_text(json.dumps(lock, indent=2, sort_keys=True), encoding="utf-8")
+        return path
 
     def finish(self) -> None:
         self.events.emit(EventType.RUN_FINISHED, run_id=self.config.run_id)

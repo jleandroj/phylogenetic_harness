@@ -4,7 +4,51 @@ from pathlib import Path
 import pytest
 
 # Make the package importable when running pytest from the repo root.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
+TOOLS_DIR = REPO / "tools"
+
+from harness import clock  # noqa: E402
+from harness.approval import ApprovalGate  # noqa: E402
+from harness.events import EventStore  # noqa: E402
+from harness.executor import LocalExecutor  # noqa: E402
+from harness.leases import LeaseManager  # noqa: E402
+from harness.runner import TaskRunner  # noqa: E402
+from harness.seeds import SeedManager  # noqa: E402
+from harness.tools import ToolRegistry  # noqa: E402
+from harness.validators import ValidatorRegistry  # noqa: E402
+
+
+def build_runner(base: Path, *, output_cap_bytes: int = 10 * 1024 * 1024, worker_id="worker-0"):
+    """Assemble a real TaskRunner over real components (no mocks)."""
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "logs").mkdir(exist_ok=True)
+    (base / "events").mkdir(exist_ok=True)
+    events = EventStore(base / "events" / "run.events.jsonl", clock=clock.counting_clock(), worker=worker_id)
+    tools = ToolRegistry()
+    tools.load_dir(TOOLS_DIR)
+    runner = TaskRunner(
+        events=events,
+        tools=tools,
+        validators=ValidatorRegistry(),
+        approval=ApprovalGate(events=events),
+        executor=LocalExecutor(base / "logs", clock_fn=clock.counting_clock(), disk_path=base,
+                               output_cap_bytes=output_cap_bytes),
+        leases=LeaseManager(events=events),
+        results_dir=base / "results",
+        seeds=SeedManager(42),
+        worker_id=worker_id,
+        clock_fn=clock.monotonic,
+    )
+    return runner, events, tools
+
+
+@pytest.fixture
+def runner_factory(tmp_path):
+    def _make(**kw):
+        return build_runner(tmp_path / "run", **kw)
+    return _make
 
 
 @pytest.fixture

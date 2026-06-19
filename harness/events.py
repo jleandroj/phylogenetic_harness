@@ -67,20 +67,35 @@ class EventType(str, Enum):
     RUN_FINISHED = "run_finished"
 
 
+try:
+    import fcntl  # POSIX advisory locks (audit P0.4)
+    _HAVE_FCNTL = True
+except ImportError:  # pragma: no cover - non-POSIX
+    _HAVE_FCNTL = False
+
+
 class EventStore:
-    """Append-only JSONL event store. One file per store; thread-safe."""
+    """Append-only JSONL event store, safe for MULTIPLE PROCESSES (audit P0.4).
+
+    Every append takes an exclusive ``flock`` on the file and assigns ``seq`` by
+    counting existing lines under that lock, so two workers writing the same file
+    never interleave a partial line nor collide on a sequence number. ``worker``
+    is recorded on each event when provided, giving a total order of
+    ``(seq, ts, worker)``.
+    """
 
     def __init__(
         self,
         path: str | os.PathLike[str],
         *,
         clock: "callable | None" = None,
+        worker: str | None = None,
     ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # intra-process; flock covers inter-process
         self._clock = clock
-        self._seq = 0
+        self.worker = worker
 
     def emit(self, event_type: EventType | str, **fields: Any) -> dict[str, Any]:
         if isinstance(event_type, EventType):
@@ -89,13 +104,28 @@ class EventStore:
             # Enforce closed vocabulary: raises ValueError on unknown name.
             etype = EventType(event_type).value
         with self._lock:
-            self._seq += 1
-            event: dict[str, Any] = {"seq": self._seq, "event": etype}
-            if self._clock is not None:
-                event["ts"] = self._clock()
-            event.update(fields)
-            with open(self.path, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(event, sort_keys=True, default=str) + "\n")
+            # 'a+b' so the fd is positioned at EOF for the append; we still take an
+            # exclusive flock to serialise across processes and to count lines for seq.
+            with open(self.path, "a+b") as fh:
+                if _HAVE_FCNTL:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+                try:
+                    fh.seek(0)
+                    seq = sum(1 for _ in fh) + 1  # global across all writers
+                    event: dict[str, Any] = {"seq": seq, "event": etype}
+                    if self._clock is not None:
+                        event["ts"] = self._clock()
+                    if self.worker is not None:
+                        event["worker"] = self.worker
+                    event.update(fields)
+                    line = (json.dumps(event, sort_keys=True, default=str) + "\n").encode("utf-8")
+                    fh.seek(0, os.SEEK_END)
+                    fh.write(line)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                finally:
+                    if _HAVE_FCNTL:
+                        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
             return event
 
     def read(self) -> list[dict[str, Any]]:
