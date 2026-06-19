@@ -9,7 +9,13 @@ from __future__ import annotations
 
 __version__ = "0.1.0"
 
-from . import (  # noqa: F401
+# Make extra tool dirs (e.g. a dedicated conda env via HARNESS_TOOL_PATHS) visible
+# to detection/execution before any tool registry is built.
+from .toolpaths import ensure_tool_paths as _ensure_tool_paths  # noqa: E402
+
+_ensure_tool_paths()
+
+from . import (  # noqa: F401,E402
     aggregate,
     approval,
     bio,

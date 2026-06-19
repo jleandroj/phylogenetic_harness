@@ -202,6 +202,48 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_pipeline(args: argparse.Namespace) -> int:
+    """Full comparative pipeline: per-gene model selection (IQ-TREE) + ASTRAL
+    species tree + gene-tree discordance."""
+    from . import manifest
+    from .aggregate import aggregate_run
+    from .bio import run_phylogenomic_pipeline
+    genes = {}
+    for spec in args.genes:
+        if "=" not in spec:
+            sys.stderr.write(f"gene spec must be name=path, got {spec!r}\n")
+            return 2
+        name, path = spec.split("=", 1)
+        genes[name] = path
+    cfg = RunConfig(run_id=args.run_id or new_run_id(), mode="full", executor="local")
+    run = Run(cfg)
+    run.capture_environment()
+    run.load_tools(manifest.DEFAULT_TOOLS_DIR)
+    run.write_tools_lock()
+    out = run_phylogenomic_pipeline(
+        run.build_runner(), run_id=cfg.run_id, genes=genes, workdir=run.dir / "work",
+        nboot=args.nboot, model_selection=not args.no_model_selection,
+        species_tree=not args.no_species_tree,
+    )
+    aggregate_run(run.dir)
+    run.finish()
+    sp = out["species_tree"] or {}
+    sys.stdout.write(json.dumps({
+        "run_dir": str(run.dir),
+        "model_selection": out["model_selection"],
+        "genes": {n: {"method": g.get("method"), "model": g.get("model"),
+                      "tree": (g.get("tree") or {}).get("status_technical"),
+                      "scientific": (g.get("tree") or {}).get("status_scientific")}
+                  for n, g in out["genes"].items()},
+        "discordant": out["discordant"],
+        "comparisons": out["comparisons"],
+        "species_tree": ({"status": sp.get("species", {}).get("status_technical") if sp.get("species") else None,
+                          "path": sp.get("species_path"), "skipped": sp.get("skipped"),
+                          "vs_genes": sp.get("vs_genes")}),
+    }, indent=2) + "\n")
+    return 0
+
+
 def _cmd_resume(args: argparse.Namespace) -> int:
     from .resume import resume_run
     summary = resume_run(args.run_dir)
@@ -246,6 +288,14 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--nboot", type=int, default=100)
     pc.add_argument("--run-id", dest="run_id", default=None)
     pc.set_defaults(func=_cmd_compare)
+
+    pp = sub.add_parser("pipeline", help="full pipeline: model selection (IQ-TREE) + ASTRAL species tree")
+    pp.add_argument("genes", nargs="+", metavar="name=fasta")
+    pp.add_argument("--nboot", type=int, default=1000)
+    pp.add_argument("--no-model-selection", action="store_true")
+    pp.add_argument("--no-species-tree", action="store_true")
+    pp.add_argument("--run-id", dest="run_id", default=None)
+    pp.set_defaults(func=_cmd_pipeline)
 
     prs = sub.add_parser("resume", help="resume a crashed run; finish unfinished tasks")
     prs.add_argument("run_dir")

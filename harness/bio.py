@@ -275,6 +275,185 @@ def run_raxml_tree(
     return {"tree": bundle, "tree_path": str(bip), "seed": seed}
 
 
+# ---- model selection + ML tree + UFBoot (IQ-TREE ModelFinder) ---------------
+
+def iqtree_best_model(report_path: str | Path) -> str | None:
+    """Parse the best-fit model selected by ModelFinder from a .iqtree report."""
+    p = Path(report_path)
+    if not p.exists():
+        return None
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        if "Best-fit model according to" in line and ":" in line:
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def iqtree_ufboot_evidence(treefile: str | Path, *, threshold: float = 95.0) -> list[CheckResult]:
+    """Mean ultrafast-bootstrap support (0-100) from an IQ-TREE .treefile."""
+    try:
+        import dendropy
+        tree = dendropy.Tree.get(path=str(treefile), schema="newick", preserve_underscores=True)
+    except Exception as exc:  # noqa: BLE001
+        return [CheckResult("iqtree_tree_parse", "FAILED", f"could not parse tree: {exc}")]
+    supports = []
+    for node in tree.internal_nodes():
+        if node.label:
+            try:
+                supports.append(float(node.label))
+            except ValueError:
+                pass
+    if not supports:
+        return [CheckResult("iqtree_ufboot", "NOT_APPLICABLE", "no UFBoot values")]
+    mean = sum(supports) / len(supports)
+    status = "PASSED" if mean >= threshold else "NOT_APPLICABLE"
+    return [CheckResult("iqtree_mean_ufboot", status,
+                        f"mean UFBoot {mean:.1f}% over {len(supports)} nodes",
+                        {"mean_ufboot": round(mean, 2), "n_nodes": len(supports)})]
+
+
+def tree_iqtree_mfp_spec() -> TaskTypeSpec:
+    """IQ-TREE: ModelFinder (MFP) selects the model, then builds the ML tree with
+    ultrafast bootstrap UNDER THAT MODEL. -redo makes reruns idempotent."""
+    return TaskTypeSpec(
+        task_type="tree_iqtree_mfp", tool_id="iqtree",
+        build_argv=lambda p: [
+            "iqtree", "-s", p["input"], "--prefix", p["prefix"], "-m", "MFP",
+            "-B", str(max(1000, int(p.get("nboot", 1000)))), "-T", "1",
+            "--seed", str(p["seed"]), "-redo",
+        ],
+        validators=["newick_valid"],
+        default_failure_policy=FailurePolicy(retryable=False, max_retries=0, timeout_seconds=1800),
+    )
+
+
+def select_model_and_tree(
+    runner: TaskRunner, *, run_id: str, aligned: str | Path, workdir: str | Path,
+    name: str, nboot: int = 1000,
+) -> dict[str, Any]:
+    """Model selection + ML tree + UFBoot in one IQ-TREE run; records the selected
+    model so the bootstrap provably uses the right model."""
+    workdir = Path(workdir).resolve()
+    workdir.mkdir(parents=True, exist_ok=True)
+    prefix = workdir / name
+    seed = runner.seeds.derive(run_id, "iqtree", name) % 1_000_000 if runner.seeds else 12345
+    treefile = Path(str(prefix) + ".treefile")
+    report = Path(str(prefix) + ".iqtree")
+
+    task = tree_iqtree_mfp_spec().build_task(
+        task_id=f"{run_id}.iqtree_{name}", run_id=run_id,
+        params={"input": str(Path(aligned).resolve()), "prefix": str(prefix),
+                "seed": seed, "nboot": nboot},
+        inputs=[str(aligned)], outputs_expected=[str(treefile)],
+        resources=ResourceRequest(cpus=2, memory_gb=2),
+    )
+
+    def hook(_t: Task, _o: list[str]) -> list[CheckResult]:
+        ev = alignment_evidence(aligned) + iqtree_ufboot_evidence(treefile)
+        model = iqtree_best_model(report)
+        ev.append(CheckResult("model_selected", "PASSED" if model else "FAILED",
+                              f"ModelFinder selected {model}" if model else "no model parsed",
+                              {"model": model}))
+        return ev
+
+    bundle = runner.run_task(
+        task, statistical_evidence_hook=hook,
+        allowed=["IQ-TREE selected a substitution model (ModelFinder) and built an ML tree "
+                 "with ultrafast bootstrap UNDER that model."],
+        limitations=["Model selection is limited to ModelFinder's candidate set."],
+    )
+    return {"tree": bundle, "tree_path": str(treefile), "model": iqtree_best_model(report), "seed": seed}
+
+
+# ---- species tree from gene trees (ASTRAL, multispecies coalescent) ----------
+
+def astral_support_evidence(species_nwk: str | Path, *, n_loci: int) -> list[CheckResult]:
+    """Local posterior support (0-1) on the ASTRAL species tree + a loci-count gate."""
+    out: list[CheckResult] = []
+    # ASTRAL is a coalescent SUMMARY: it needs many loci for statistical power.
+    out.append(CheckResult("astral_n_loci", "PASSED" if n_loci >= 4 else "NOT_APPLICABLE",
+                           f"{n_loci} gene trees", {"n_loci": n_loci}))
+    try:
+        import dendropy
+        tree = dendropy.Tree.get(path=str(species_nwk), schema="newick", preserve_underscores=True)
+    except Exception as exc:  # noqa: BLE001
+        out.append(CheckResult("astral_tree_parse", "FAILED", f"could not parse: {exc}"))
+        return out
+    posts = []
+    for node in tree.internal_nodes():
+        if node.label:
+            try:
+                posts.append(float(node.label))
+            except ValueError:
+                pass
+    if posts:
+        mean = sum(posts) / len(posts)
+        out.append(CheckResult("astral_mean_localpp", "PASSED" if mean >= 0.9 else "NOT_APPLICABLE",
+                              f"mean local posterior {mean:.3f}", {"mean_localpp": round(mean, 4)}))
+    else:
+        out.append(CheckResult("astral_localpp", "NOT_APPLICABLE", "no support values"))
+    return out
+
+
+def species_tree_astral_spec() -> TaskTypeSpec:
+    return TaskTypeSpec(
+        task_type="species_tree_astral", tool_id="astral",
+        build_argv=lambda p: ["astral", "-o", p["output"], "-i", p["input"], "-t", "1"],
+        validators=["newick_valid"],
+        default_failure_policy=FailurePolicy(retryable=True, max_retries=1, timeout_seconds=900),
+    )
+
+
+ASTRAL_NOT_ALLOWED = [
+    "ASTRAL assumes ILS is the ONLY source of gene-tree discordance (no HGT/introgression/error).",
+    "A species tree from few loci has low power; this is a summary, not a settled phylogeny.",
+]
+
+
+def run_astral_species_tree(
+    runner: TaskRunner, *, run_id: str, gene_tree_paths: list[str], workdir: str | Path,
+) -> dict[str, Any]:
+    """Build a coalescent species tree from per-gene trees with ASTRAL, then
+    report how each gene tree agrees/disagrees with it (RF)."""
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    genetrees = workdir / "genetrees.nwk"
+    lines = []
+    for tp in gene_tree_paths:
+        txt = Path(tp).read_text(encoding="utf-8").strip()
+        if txt:
+            lines.append(txt.splitlines()[0].strip())
+    genetrees.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    species = workdir / "species.nwk"
+
+    task = species_tree_astral_spec().build_task(
+        task_id=f"{run_id}.astral", run_id=run_id,
+        params={"input": str(genetrees), "output": str(species)},
+        inputs=[str(genetrees)], outputs_expected=[str(species)],
+        resources=ResourceRequest(cpus=1, memory_gb=2),
+    )
+
+    def hook(_t: Task, _o: list[str]) -> list[CheckResult]:
+        return astral_support_evidence(species, n_loci=len(lines))
+
+    bundle = runner.run_task(
+        task, statistical_evidence_hook=hook,
+        allowed=["ASTRAL estimated a species tree from the gene trees under the multispecies coalescent."],
+        limitations=[f"Estimated from {len(lines)} gene trees."],
+        extra_not_allowed=ASTRAL_NOT_ALLOWED,
+    )
+
+    vs_genes = []
+    if bundle["status_technical"] == "SUCCEEDED":
+        for tp in gene_tree_paths:
+            try:
+                cmp = compare_gene_trees(species, tp)
+                cmp["gene_tree"] = str(tp)
+                vs_genes.append(cmp)
+            except Exception:  # noqa: BLE001, S110
+                pass
+    return {"species": bundle, "species_path": str(species), "vs_genes": vs_genes, "n_loci": len(lines)}
+
+
 def run_comparative_slice(
     runner: TaskRunner, *, run_id: str, genes: dict[str, str], workdir: str | Path,
     nboot: int = 100,
@@ -323,4 +502,78 @@ def run_comparative_slice(
                  "gene-specific history — NOT evidence of a single true tree."
                  if any_discordant else
                  "Gene trees are congruent on these data; congruence is not proof of the species tree."),
+    }
+
+
+def run_phylogenomic_pipeline(
+    runner: TaskRunner, *, run_id: str, genes: dict[str, str], workdir: str | Path,
+    nboot: int = 1000, model_selection: bool = True, species_tree: bool = True,
+) -> dict[str, Any]:
+    """End-to-end comparative pipeline: per gene, align (MAFFT) then build a tree
+    with model selection (IQ-TREE ModelFinder, if available) else RAxML bootstrap;
+    report gene-tree discordance (RF); and estimate a coalescent species tree with
+    ASTRAL (if available) plus species-vs-gene agreement.
+
+    Every step degrades honestly: a tool that is absent is reported, not faked.
+    """
+    workdir = Path(workdir)
+    have_iqtree = "iqtree" in runner.tools.all() and runner.tools.get("iqtree").available
+    have_astral = "astral" in runner.tools.all() and runner.tools.get("astral").available
+    use_model = model_selection and have_iqtree
+
+    per_gene: dict[str, Any] = {}
+    gene_tree_paths: list[str] = []
+    for name, fasta in genes.items():
+        gdir = workdir / name
+        gdir.mkdir(parents=True, exist_ok=True)
+        aligned = gdir / "aligned.fasta"
+        msa = msa_mafft_spec().build_task(
+            task_id=f"{run_id}.msa_{name}", run_id=run_id,
+            params={"input": str(fasta), "stdout_to": str(aligned)},
+            inputs=[str(fasta)], outputs_expected=[str(aligned)],
+            resources=ResourceRequest(cpus=2, memory_gb=2),
+        )
+        msa_bundle = runner.run_task(msa, limitations=["Alignment quality bounds the gene tree."])
+        if msa_bundle["status_technical"] != "SUCCEEDED":
+            per_gene[name] = {"msa": msa_bundle, "tree": None, "tree_path": None, "method": None}
+            continue
+        if use_model:
+            res = select_model_and_tree(runner, run_id=run_id, aligned=aligned,
+                                        workdir=gdir / "iqtree", name=name, nboot=nboot)
+            res["method"] = "iqtree_mfp"
+        else:
+            res = run_raxml_tree(runner, run_id=run_id, aligned=aligned,
+                                 workdir=gdir / "raxml", name=name, nboot=min(nboot, 100))
+            res["method"] = "raxml"
+            res["model"] = "GTRGAMMA (fixed)"
+        per_gene[name] = {"msa": msa_bundle, **res}
+        if res["tree"]["status_technical"] == "SUCCEEDED":
+            gene_tree_paths.append(res["tree_path"])
+
+    # Gene-tree discordance (RF) across all built trees.
+    built = {n: g["tree_path"] for n, g in per_gene.items()
+             if g.get("tree") and g["tree"]["status_technical"] == "SUCCEEDED"}
+    comparisons = []
+    names = sorted(built)
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            cmp = compare_gene_trees(built[names[i]], built[names[j]])
+            cmp["pair"] = [names[i], names[j]]
+            comparisons.append(cmp)
+    discordant = any(not c["congruent"] for c in comparisons)
+
+    # Coalescent species tree (ASTRAL) — only if we have >=2 gene trees and the tool.
+    species = None
+    if species_tree and have_astral and len(gene_tree_paths) >= 2:
+        species = run_astral_species_tree(runner, run_id=run_id,
+                                          gene_tree_paths=gene_tree_paths, workdir=workdir / "astral")
+    elif species_tree and not have_astral:
+        species = {"species": None, "skipped": "astral not available (registered but unavailable)"}
+
+    return {
+        "model_selection": use_model,
+        "genes": per_gene,
+        "comparisons": comparisons,
+        "discordant": discordant,
+        "species_tree": species,
     }

@@ -168,6 +168,7 @@ class TaskRunner:
         degeneracy: science.DegeneracyReport | None = None,
         allowed: Sequence[str] | None = None,
         limitations: Sequence[str] | None = None,
+        extra_not_allowed: Sequence[str] | None = None,
     ) -> dict[str, Any]:
         bindings = dict(bindings or {})
         validator_kwargs = dict(validator_kwargs or {})
@@ -256,6 +257,7 @@ class TaskRunner:
         interp = science.build_interpretation(
             checks, statistical_checks=stat_checks, degeneracy=degen,
             negative=negative, allowed=allowed, limitations=limitations,
+            extra_not_allowed=extra_not_allowed,
         )
         task.set_scientific(interp.scientific_state)
 

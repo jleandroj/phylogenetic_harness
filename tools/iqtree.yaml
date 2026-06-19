@@ -1,0 +1,16 @@
+# IQ-TREE (binary `iqtree`, v3.x here): ModelFinder model selection + ML tree +
+# ultrafast bootstrap in one run, so the bootstrap uses the SELECTED model.
+tool_id: iqtree
+tool_name: IQ-TREE
+version_command: "iqtree --version"
+requires_gpu: false
+requires_network: false
+seed_flag: null   # injected explicitly via --seed by the driver
+input_formats: [FASTA, PHYLIP, Nexus]
+output_formats: [Newick, Nexus]
+risks:
+  - model selection (MFP) and UFBoot are conditional on the candidate model set
+  - UFBoot >= 95 is the support threshold, not proof of a clade
+validators:
+  - exit_code_zero
+  - newick_valid
