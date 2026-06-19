@@ -22,8 +22,9 @@ a green exit code (the project's core invariant).
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from . import science
 from .events import EventStore, EventType

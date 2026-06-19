@@ -9,9 +9,10 @@ from __future__ import annotations
 import json
 import os
 import threading
+from collections.abc import Iterator
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 
 class EventType(str, Enum):
@@ -59,10 +60,13 @@ class EventType(str, Enum):
     APPROVAL_REQUIRED = "approval_required"
     APPROVAL_GRANTED = "approval_granted"
     APPROVAL_DENIED = "approval_denied"
-    # Hooks / reporting
+    # Hooks (RESERVED, audit P3.13): there is no hook subsystem yet; these names
+    # are reserved so the vocabulary is stable when one lands. They are never
+    # emitted today — do not rely on them.
     HOOK_FIRED = "hook_fired"
     HOOK_SUCCEEDED = "hook_succeeded"
     HOOK_FAILED = "hook_failed"
+    # Reporting
     REPORT_GENERATED = "report_generated"
     RUN_FINISHED = "run_finished"
 
@@ -88,7 +92,7 @@ class EventStore:
         self,
         path: str | os.PathLike[str],
         *,
-        clock: "callable | None" = None,
+        clock: callable | None = None,
         worker: str | None = None,
     ) -> None:
         self.path = Path(path)
@@ -132,7 +136,7 @@ class EventStore:
         if not self.path.exists():
             return []
         out: list[dict[str, Any]] = []
-        with open(self.path, "r", encoding="utf-8") as fh:
+        with open(self.path, encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if line:

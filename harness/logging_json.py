@@ -25,7 +25,7 @@ class JsonLogger:
         *,
         mirror_stderr: bool = False,
         context: dict[str, Any] | None = None,
-        clock: "callable | None" = None,
+        clock: callable | None = None,
     ) -> None:
         self._lock = threading.Lock()
         self._fh: TextIO | None = None
@@ -39,7 +39,7 @@ class JsonLogger:
         # stay deterministic and the module never calls a forbidden implicit clock.
         self._clock = clock
 
-    def bind(self, **context: Any) -> "JsonLogger":
+    def bind(self, **context: Any) -> JsonLogger:
         """Return a child logger sharing the same sink with extra context."""
         child = JsonLogger.__new__(JsonLogger)
         child._lock = self._lock

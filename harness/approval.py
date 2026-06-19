@@ -7,7 +7,9 @@ so an unmarked dangerous task is caught rather than silently executed.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .events import EventStore, EventType
@@ -45,12 +47,16 @@ class ApprovalGate:
         events: EventStore | None = None,
         ram_fraction_threshold: float = 0.5,
         walltime_minutes_threshold: int = 12 * 60,
+        allow_overwrite: bool = False,
+        persist_path: str | Path | None = None,
     ) -> None:
         self.policy = policy
         self.host_memory_gb = host_memory_gb
         self.events = events
         self.ram_fraction_threshold = ram_fraction_threshold
         self.walltime_minutes_threshold = walltime_minutes_threshold
+        self.allow_overwrite = allow_overwrite
+        self.persist_path = Path(persist_path) if persist_path else None
         self._approvals: dict[str, Approval] = {}
 
     def auto_flags(self, task: Task) -> list[str]:
@@ -68,8 +74,12 @@ class ApprovalGate:
             )
         if task.resources.walltime_minutes > self.walltime_minutes_threshold:
             reasons.append(f"walltime {task.resources.walltime_minutes} min exceeds threshold")
-        if "overwrite" in task.params and task.params["overwrite"]:
-            reasons.append("overwrites existing outputs")
+        # Overwrite protection (audit P2.12): if the run forbids overwrite and an
+        # expected output already exists on disk, require explicit approval.
+        if not self.allow_overwrite:
+            existing = [o for o in task.outputs_expected if o and Path(o).exists()]
+            if existing or task.params.get("overwrite"):
+                reasons.append(f"would overwrite existing output(s): {existing or '[declared]'}")
         return reasons
 
     def needs_approval(self, task: Task) -> bool:
@@ -80,6 +90,21 @@ class ApprovalGate:
         if self.events:
             etype = EventType.APPROVAL_GRANTED if approval.granted else EventType.APPROVAL_DENIED
             self.events.emit(etype, **approval.to_dict())
+        self._persist()
+
+    def _persist(self) -> None:
+        """Durably record approvals so a restart does not lose who approved what."""
+        if not self.persist_path:
+            return
+        self.persist_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.persist_path.with_suffix(self.persist_path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps({tid: a.to_dict() for tid, a in self._approvals.items()},
+                       indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        import os
+        os.replace(tmp, self.persist_path)  # atomic
 
     def is_granted(self, task_id: str) -> bool:
         a = self._approvals.get(task_id)

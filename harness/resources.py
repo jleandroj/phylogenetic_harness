@@ -44,7 +44,7 @@ class PidSampler(threading.Thread):
     def _read_status_kb(self) -> tuple[int | None, int | None]:
         rss = hwm = None
         try:
-            with open(f"/proc/{self.pid}/status", "r", encoding="utf-8") as fh:
+            with open(f"/proc/{self.pid}/status", encoding="utf-8") as fh:
                 for line in fh:
                     if line.startswith("VmRSS:"):
                         rss = int(line.split()[1])

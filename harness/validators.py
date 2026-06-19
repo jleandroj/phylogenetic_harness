@@ -6,9 +6,10 @@ correctness; that separation is enforced in ``harness.science``.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 VALID_DNA = set("ACGTNUacgtnu-.RYSWKMBDHVryswkmbdhvNn")
 
@@ -53,7 +54,7 @@ def _parse_fasta(path: Path) -> tuple[list[str], dict[str, int], set[str]]:
     lengths: dict[str, int] = {}
     bad_chars: set[str] = set()
     current = None
-    with open(path, "r", encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         for line in fh:
             line = line.rstrip("\n")
             if line.startswith(">"):
@@ -129,6 +130,21 @@ def _newick_balanced(text: str) -> bool:
     return depth == 0
 
 
+def _newick_taxa_dendropy(text: str) -> list[str] | None:
+    """Parse leaf labels with dendropy if available (correct: handles quoted
+    labels, comments, numeric labels). Returns None if dendropy is absent."""
+    try:
+        import dendropy
+    except ImportError:
+        return None
+    # preserve_underscores: keep "homo_sapiens" intact instead of the Newick-standard
+    # underscore->space conversion, since taxon IDs commonly use underscores.
+    tree = dendropy.Tree.get(
+        data=text, schema="newick", suppress_internal_node_taxa=True, preserve_underscores=True
+    )
+    return [leaf.taxon.label for leaf in tree.leaf_node_iter() if leaf.taxon is not None]
+
+
 def newick_valid(path: str | Path, *, expected_taxa: list[str] | None = None, **_: Any) -> CheckResult:
     p = Path(path)
     if not p.exists():
@@ -138,10 +154,19 @@ def newick_valid(path: str | Path, *, expected_taxa: list[str] | None = None, **
         return CheckResult("newick_valid", "FAILED", "Newick must end with ';'")
     if not _newick_balanced(text):
         return CheckResult("newick_valid", "FAILED", "unbalanced parentheses")
-    taxa = _newick_taxa(text)
+
+    # Prefer a real phylogenetics parser; fall back to the approximate tokenizer.
+    engine = "dendropy"
+    try:
+        taxa = _newick_taxa_dendropy(text)
+    except Exception as exc:  # dendropy raises its own error hierarchy on malformed input
+        return CheckResult("newick_valid", "FAILED", f"dendropy parse error: {exc}", {"engine": engine})
+    if taxa is None:
+        engine = "fallback-approx"
+        taxa = _newick_taxa(text)
     if not taxa:
-        return CheckResult("newick_valid", "FAILED", "no taxa parsed")
-    data = {"taxa": taxa}
+        return CheckResult("newick_valid", "FAILED", "no taxa parsed", {"engine": engine})
+    data = {"taxa": taxa, "engine": engine}
     if expected_taxa is not None:
         present = set(taxa)
         missing = [t for t in expected_taxa if t not in present]
@@ -159,7 +184,7 @@ def vcf_header_valid(path: str | Path, **_: Any) -> CheckResult:
     if not p.exists():
         return CheckResult("vcf_header_valid", "FAILED", f"missing: {p}")
     saw_fileformat = saw_chrom = False
-    with open(p, "r", encoding="utf-8") as fh:
+    with open(p, encoding="utf-8") as fh:
         for line in fh:
             if line.startswith("##fileformat=VCF"):
                 saw_fileformat = True

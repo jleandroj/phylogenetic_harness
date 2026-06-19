@@ -8,12 +8,34 @@ to produce false science behind a green checkmark**.
 > Technical state and scientific state are tracked **separately** and never
 > auto-derived from one another.
 
-## Status — v1 (auditable core)
+## Status — v1 core + P0/P1 audit hardening
 
-This milestone delivers the auditable spine with real, passing tests. It does
-**not** yet execute heavy bioinformatics pipelines (Cactus / IQ-TREE / large
-alignments); those tools are *registered as contracts* and executed on demand in
-later milestones.
+This milestone delivers the auditable spine with real, passing tests (113), then
+closes the P0/P1 findings from an adversarial self-audit. It does **not** yet
+execute heavy bioinformatics pipelines (Cactus / IQ-TREE / large alignments);
+those tools are *registered as contracts* and executed on demand in later
+milestones.
+
+### The single execution path
+
+Nothing executes a command except `harness.runner.TaskRunner`, which forces, in
+order: **approval gate → tool-registry gate → APPROVED/LEASED/RUNNING → argv-only
+execution → all declared validators → scientific interpretation → terminal state**.
+A green exit code never auto-promotes to a biological conclusion — the scientific
+state is assigned only by `harness.science`.
+
+### Audit hardening (verified by tests)
+
+- **argv-only execution** — no shell; hostile params are inert (`test_injection`).
+- **real recovery** — state is rebuilt from the event log; a real `SIGKILL`
+  mid-run leaves no zombie (`test_process_kill_real`).
+- **multi-process event store** — `flock` + global sequence; 8 concurrent writers
+  don't corrupt the log (`test_concurrency_real`).
+- **output caps** — oversized stdout is truncated, not allowed to fill the disk
+  (`test_stdout_giant`); a pre-flight disk check aborts when nearly full.
+- **per-PID resource sampling**, **per-attempt logs**, **secret redaction**,
+  **deterministic seeds + `TOOLS.lock.json`**, and a stricter
+  `BIOLOGICALLY_INTERPRETABLE` bar (≥2 independent statistical evidences).
 
 ## Layout
 
@@ -41,6 +63,9 @@ runs/           per-run output (gitignored)
 | `validators` | FASTA / Newick / VCF / file validators (technical only) |
 | `science` | 3-level interpretation, negative-result + degeneracy classification |
 | `leases` / `workers` | lease expiry, reaping, requeue — no zombie tasks |
+| `recovery` | rebuild task state from the event log; detect orphans |
+| `runner` | **TaskRunner** — the single enforced execution path |
+| `redaction` | mask secrets in captured output and the env snapshot |
 | `report` | final report with the 13 mandatory sections (spec §24.14) |
 | `run` | frozen `RunConfig` + run orchestration |
 

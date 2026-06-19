@@ -40,7 +40,7 @@ class DatasetInput:
     notes: str = ""
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "DatasetInput":
+    def from_dict(cls, d: dict[str, Any]) -> DatasetInput:
         missing = [k for k in ("sample_id", "path", "format") if not d.get(k)]
         if missing:
             raise ManifestError(f"input missing required field(s): {missing}")
@@ -59,7 +59,7 @@ class DatasetInput:
             notes=d.get("notes", ""),
         )
 
-    def compute_checksum(self, base_dir: Path) -> "DatasetInput":
+    def compute_checksum(self, base_dir: Path) -> DatasetInput:
         """Fill checksum + size from the file on disk, resolved against base_dir."""
         p = (base_dir / self.path) if not Path(self.path).is_absolute() else Path(self.path)
         if p.exists() and p.is_file():
@@ -97,7 +97,7 @@ class DatasetManifest:
     base_dir: Path = field(default_factory=lambda: Path("."))
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any], base_dir: str | Path = ".") -> "DatasetManifest":
+    def from_dict(cls, d: dict[str, Any], base_dir: str | Path = ".") -> DatasetManifest:
         for key in ("dataset_id", "dataset_type", "scientific_question"):
             if not d.get(key):
                 raise ManifestError(f"manifest missing required field: {key}")
@@ -119,7 +119,7 @@ class DatasetManifest:
         )
 
     @classmethod
-    def load(cls, path: str | Path) -> "DatasetManifest":
+    def load(cls, path: str | Path) -> DatasetManifest:
         p = Path(path)
         if not p.exists():
             raise MissingManifestError(f"no dataset manifest at {p}")
@@ -128,7 +128,7 @@ class DatasetManifest:
             raise ManifestError(f"empty manifest at {p}")
         return cls.from_dict(data, base_dir=p.parent)
 
-    def compute_checksums(self) -> "DatasetManifest":
+    def compute_checksums(self) -> DatasetManifest:
         for inp in self.inputs:
             inp.compute_checksum(self.base_dir)
         return self

@@ -1,7 +1,6 @@
 import pytest
 
-from harness.states import ScientificState, TechnicalState
-from harness.states import IllegalTransition
+from harness.states import IllegalTransition, ScientificState, TechnicalState
 from harness.tasks import Task
 
 

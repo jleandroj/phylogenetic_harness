@@ -11,13 +11,12 @@ def test_executor_uses_spawn_context():
 
 
 def test_runconfig_is_frozen():
-    cfg = RunConfig(run_id="r1")
     import dataclasses
-    try:
+
+    import pytest
+    cfg = RunConfig(run_id="r1")
+    with pytest.raises(dataclasses.FrozenInstanceError):
         cfg.seed = 99  # type: ignore[misc]
-        assert False, "RunConfig should be immutable"
-    except dataclasses.FrozenInstanceError:
-        pass
 
 
 def test_runconfig_rejects_bad_mode():

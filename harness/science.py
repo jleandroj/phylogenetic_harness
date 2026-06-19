@@ -10,13 +10,13 @@ either success or failure.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Sequence
+from typing import Any
 
 from .states import ScientificState
 from .validators import CheckResult
-
 
 # ---- negative-result classification (spec §24.7) -----------------------------
 

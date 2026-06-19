@@ -10,7 +10,6 @@ import hashlib
 import json
 import os
 import re
-from pathlib import Path
 from typing import Any
 
 _HEX = "0123456789abcdef"

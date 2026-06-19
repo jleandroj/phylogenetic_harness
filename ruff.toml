@@ -1,0 +1,13 @@
+# Audit P2.12 — lint config. Conservative rule set; line length matches the code.
+line-length = 110
+target-version = "py310"
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "E501",  # long lines are handled by formatter judgement here
+    "B008",  # default-arg calls are used deliberately (clock factories)
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["E402"]  # sys.path bootstrap before imports in conftest

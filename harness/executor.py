@@ -24,9 +24,10 @@ import multiprocessing
 import os
 import subprocess
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from . import clock
 from .redaction import redact as _default_redact
@@ -77,7 +78,7 @@ def _pump(src, dst_path: Path, cap: int, redactor: Callable[[str], str]) -> bool
         if buf:
             written, truncated = _emit_line(out, buf, written, cap, truncated, redactor)
         if truncated:
-            out.write(f"\n[TRUNCATED at {cap} bytes]\n".encode("utf-8"))
+            out.write(f"\n[TRUNCATED at {cap} bytes]\n".encode())
     return truncated
 
 

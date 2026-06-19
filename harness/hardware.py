@@ -15,7 +15,7 @@ from typing import Any
 
 def _read_meminfo_kb(key: str) -> int | None:
     try:
-        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
             for line in fh:
                 if line.startswith(key + ":"):
                     return int(line.split()[1])  # value in kB
@@ -31,7 +31,7 @@ def cpu_profile() -> dict[str, Any]:
         # Count distinct (physical id, core id) pairs from /proc/cpuinfo.
         cores: set[tuple[str, str]] = set()
         phys = core = None
-        with open("/proc/cpuinfo", "r", encoding="utf-8") as fh:
+        with open("/proc/cpuinfo", encoding="utf-8") as fh:
             for line in fh:
                 if line.startswith("physical id"):
                     phys = line.split(":")[1].strip()

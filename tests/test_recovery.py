@@ -1,6 +1,5 @@
 """Lease expiry, reaping, requeue and worker loss (spec §15, §24.11)."""
-from harness.clock import counting_clock
-from harness.events import EventStore, EventType
+from harness.events import EventStore
 from harness.leases import LeaseManager
 from harness.states import TechnicalState
 from harness.tasks import FailurePolicy, ResourceRequest, Task

@@ -18,3 +18,13 @@ packages = ["harness"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# P3.13: silence the pytest-asyncio default-loop-scope deprecation warning.
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.mypy]
+# P2.12: gradual typing — start permissive, tighten over time.
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = true
+check_untyped_defs = false
+files = ["harness"]

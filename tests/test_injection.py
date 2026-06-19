@@ -36,8 +36,9 @@ def test_real_cp_with_malicious_dest_does_not_run_shell(runner_factory, tmp_path
 
 def test_string_command_cannot_reach_executor(runner_factory, tmp_path):
     """Even if someone bypasses render_argv, the executor rejects string commands."""
-    from harness.executor import LocalExecutor, ShellCommandRejected
     import pytest
+
+    from harness.executor import LocalExecutor, ShellCommandRejected
     ex = LocalExecutor(tmp_path, disk_path=tmp_path)
     with pytest.raises(ShellCommandRejected):
         ex.run("t", "rm -rf /")

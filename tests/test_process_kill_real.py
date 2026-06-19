@@ -10,7 +10,6 @@ import os
 import signal
 import subprocess
 import sys
-import time
 
 from harness.events import EventStore
 from harness.leases import LeaseManager

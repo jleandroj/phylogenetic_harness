@@ -10,8 +10,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .events import EventStore
-
 # The 13 mandatory sections (spec §24.14). Order is part of the contract; tests
 # assert every one of these headings is present.
 MANDATORY_SECTIONS = [

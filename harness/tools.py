@@ -46,7 +46,7 @@ class ToolContract:
     available: bool = False
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "ToolContract":
+    def from_dict(cls, d: dict[str, Any]) -> ToolContract:
         vc = d.get("version_command")
         if isinstance(vc, str):
             vc = vc.split()
@@ -65,7 +65,7 @@ class ToolContract:
             seed_flag=d.get("seed_flag"),
         )
 
-    def detect(self) -> "ToolContract":
+    def detect(self) -> ToolContract:
         """Resolve executable path and version on this host (best-effort)."""
         if not self.version_command:
             return self

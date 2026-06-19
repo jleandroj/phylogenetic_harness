@@ -29,7 +29,7 @@ def test_detect_tools_marks_absent_without_crashing():
     # python is essentially always present in this environment
     assert tools["python"]["present"] is True
     # A tool that may be absent must still produce a well-formed record.
-    for name, rec in tools.items():
+    for _name, rec in tools.items():
         assert set(rec) == {"present", "path", "version"}
         if not rec["present"]:
             assert rec["version"] is None and rec["path"] is None

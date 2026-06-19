@@ -8,7 +8,7 @@ capture, tool/validator registries, approval gate and executor, and lays out the
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -84,7 +84,12 @@ class Run:
         self.seeds = SeedManager(config.seed, required=(config.mode in ("full", "test")))
         self.tools = ToolRegistry()
         self.validators = ValidatorRegistry()
-        self.approval = ApprovalGate(policy=config.approval_policy, events=self.events)
+        self.approval = ApprovalGate(
+            policy=config.approval_policy,
+            events=self.events,
+            allow_overwrite=config.allow_overwrite,
+            persist_path=self.dir / "approvals.json",
+        )
         self.executor = get_executor(
             config.executor if config.mode != "dry_run" else "dry_run",
             self.dir / "logs",
