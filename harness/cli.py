@@ -81,12 +81,25 @@ def _cmd_demo_run(args: argparse.Namespace) -> int:
     )
 
     # THE ONLY execution path: the TaskRunner enforces gate + state + validators.
+    # Persist the plan + freeze a manifest so the run is resumable and replayable.
+    from . import manifest, taskstore
+    from .aggregate import aggregate_run
+    taskstore.save_tasks(run.dir, [task])
     runner = run.build_runner()
     bundle = runner.run_task(
         task,
         allowed=["The registered tool executed and produced a non-empty output file."],
         limitations=["This demo proves auditability only, not any biological claim."],
     )
+    tools_lock = json.loads((run.dir / "TOOLS.lock.json").read_text())
+    manifest.write_manifest(
+        run.dir,
+        run_config={**cfg.to_dict(), "config_hash": cfg.config_hash},
+        tools_lock=tools_lock,
+        seed_record=run.seeds.record(),
+        input_paths=[i for i in task.inputs if Path(i).exists()],
+    )
+    aggregate_run(run.dir)
 
     sections = ReportGenerator.empty_sections()
     sections["1. What was executed"] = [
