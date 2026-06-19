@@ -111,6 +111,9 @@ class TaskRunner:
             timeout_seconds=task.failure_policy.timeout_seconds,
             gpu_assigned=self._gpu_for(task),
             attempt=attempt,
+            # A tool that writes its result to stdout declares the target here, so
+            # the output is captured faithfully without any shell redirection.
+            stdout_to=task.params.get("stdout_to"),
         )
         self.events.emit(
             EventType.COMMAND_FINISHED, task_id=task.task_id,
@@ -160,6 +163,7 @@ class TaskRunner:
         bindings: dict[str, Any] | None = None,
         validator_kwargs: dict[str, Any] | None = None,
         statistical_checks: Sequence[CheckResult] | None = None,
+        statistical_evidence_hook: Any | None = None,
         negative: science.NegativeResult | None = None,
         degeneracy: science.DegeneracyReport | None = None,
         allowed: Sequence[str] | None = None,
@@ -232,11 +236,25 @@ class TaskRunner:
             finally:
                 self.leases.release(task.task_id)
 
+        # Real statistical evidence (audit: feed the science layer). A task type's
+        # hook computes evidence from the produced outputs (e.g. alignment quality,
+        # tree support) only when the task actually succeeded.
+        stat_checks = list(statistical_checks or [])
+        if final == TechnicalState.SUCCEEDED and statistical_evidence_hook is not None:
+            produced = [o for o in task.outputs_expected if Path(o).exists()]
+            try:
+                stat_checks.extend(statistical_evidence_hook(task, produced))
+            except Exception as exc:  # evidence is best-effort; never crash the run
+                self.events.emit(
+                    EventType.RESULT_INTERPRETATION_LIMITED, task_id=task.task_id,
+                    reason=f"evidence_hook_failed:{type(exc).__name__}:{exc}",
+                )
+
         # Scientific interpretation (only the science layer sets sci state). Q4:
         # auto-detect degeneracy so a clean-looking but degenerate output can't lie.
         degen = self._auto_degeneracy(task, degeneracy) if final == TechnicalState.SUCCEEDED else degeneracy
         interp = science.build_interpretation(
-            checks, statistical_checks=statistical_checks, degeneracy=degen,
+            checks, statistical_checks=stat_checks, degeneracy=degen,
             negative=negative, allowed=allowed, limitations=limitations,
         )
         task.set_scientific(interp.scientific_state)

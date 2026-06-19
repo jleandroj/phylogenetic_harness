@@ -143,6 +143,32 @@ def _cmd_aggregate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_phylo(args: argparse.Namespace) -> int:
+    """Real slice: MAFFT alignment -> FastTree tree on an input FASTA."""
+    from . import manifest
+    from .aggregate import aggregate_run
+    from .bio import run_phylo_slice
+    cfg = RunConfig(run_id=args.run_id or new_run_id(), mode="full", executor="local")
+    run = Run(cfg)
+    run.capture_environment()
+    run.load_tools(manifest.DEFAULT_TOOLS_DIR)
+    run.write_tools_lock()
+    out = run_phylo_slice(run.build_runner(), run_id=cfg.run_id,
+                          fasta_path=args.fasta, workdir=run.dir / "work")
+    # Persist plan + manifest + CSV for replay/diff/aggregate.
+    aggregate_run(run.dir)
+    run.finish()
+    tree = out.get("tree") or {}
+    sys.stdout.write(json.dumps({
+        "run_dir": str(run.dir),
+        "msa": out["msa"]["status_technical"],
+        "tree": tree.get("status_technical"),
+        "scientific_state": tree.get("status_scientific"),
+        "confidence": (tree.get("interpretation") or {}).get("confidence"),
+    }, indent=2) + "\n")
+    return 0
+
+
 def _cmd_resume(args: argparse.Namespace) -> int:
     from .resume import resume_run
     summary = resume_run(args.run_dir)
@@ -176,6 +202,11 @@ def build_parser() -> argparse.ArgumentParser:
     pa = sub.add_parser("aggregate", help="aggregate a run's results into results.csv")
     pa.add_argument("run_dir")
     pa.set_defaults(func=_cmd_aggregate)
+
+    pph = sub.add_parser("phylo", help="real slice: MAFFT align + FastTree tree on a FASTA")
+    pph.add_argument("fasta")
+    pph.add_argument("--run-id", dest="run_id", default=None)
+    pph.set_defaults(func=_cmd_phylo)
 
     prs = sub.add_parser("resume", help="resume a crashed run; finish unfinished tasks")
     prs.add_argument("run_dir")

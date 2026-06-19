@@ -12,6 +12,7 @@ __version__ = "0.1.0"
 from . import (  # noqa: F401
     aggregate,
     approval,
+    bio,
     clock,
     datasets,
     diff,

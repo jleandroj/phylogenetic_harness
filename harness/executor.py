@@ -185,9 +185,17 @@ class LocalExecutor:
         env: dict[str, str] | None = None,
         gpu_assigned: str | None = None,
         attempt: int = 1,
+        stdout_to: str | os.PathLike[str] | None = None,
     ) -> ExecutionResult:
         argv = _require_argv(command)
-        stdout_path, stderr_path = self._log_paths(task_id, attempt)
+        stderr_log = self._log_paths(task_id, attempt)[1]
+        # When a tool writes its result to stdout (mafft, fasttree, ...), capture it
+        # FAITHFULLY to the declared output file — no shell redirection, no cap, no
+        # redaction (it is a scientific output, not a log). stderr still goes to the
+        # capped/redacted log. Otherwise stdout goes to the normal capped log.
+        faithful_stdout = stdout_to is not None
+        stdout_path = Path(stdout_to) if faithful_stdout else self._log_paths(task_id, attempt)[0]
+        stderr_path = stderr_log
 
         # Pre-flight disk check (audit P0.4): refuse to start if nearly full.
         import shutil
@@ -218,22 +226,31 @@ class LocalExecutor:
         pid: int | None = None
         truncated_out = truncated_err = False
         sampler: PidSampler | None = None
+        out_fh = None
         try:
+            if faithful_stdout:
+                stdout_path.parent.mkdir(parents=True, exist_ok=True)
+                out_fh = open(stdout_path, "wb")
+                stdout_target = out_fh
+            else:
+                stdout_target = subprocess.PIPE
             proc = subprocess.Popen(
-                argv, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                argv, shell=False, stdout=stdout_target, stderr=subprocess.PIPE,
                 cwd=str(cwd) if cwd else None, env=child_env, bufsize=0,
             )
             pid = proc.pid
             sampler = PidSampler(pid)
             sampler.start()
             holder: dict[str, bool] = {}
-            t_out = threading.Thread(
-                target=lambda: holder.__setitem__(
-                    "out", _pump(proc.stdout, stdout_path, self.output_cap_bytes, self.redactor)))
+            t_out = None
+            if not faithful_stdout:
+                t_out = threading.Thread(
+                    target=lambda: holder.__setitem__(
+                        "out", _pump(proc.stdout, stdout_path, self.output_cap_bytes, self.redactor)))
+                t_out.start()
             t_err = threading.Thread(
                 target=lambda: holder.__setitem__(
                     "err", _pump(proc.stderr, stderr_path, self.output_cap_bytes, self.redactor)))
-            t_out.start()
             t_err.start()
             try:
                 exit_code = proc.wait(timeout=timeout_seconds)
@@ -241,13 +258,16 @@ class LocalExecutor:
                 timed_out = True
                 proc.kill()
                 exit_code = proc.wait()
-            t_out.join()
+            if t_out is not None:
+                t_out.join()
             t_err.join()
             truncated_out = holder.get("out", False)
             truncated_err = holder.get("err", False)
         except (OSError, ValueError) as exc:
             error = str(exc)
         finally:
+            if out_fh is not None:
+                out_fh.close()
             if sampler is not None:
                 sampler.stop()
                 sampler.join(timeout=1.0)

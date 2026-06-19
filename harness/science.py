@@ -208,11 +208,17 @@ def build_interpretation(
     tech_status = "PASSED" if all(c.passed for c in technical_checks) else "FAILED"
     technical = LevelVerdict(tech_status, [c.to_dict() for c in technical_checks])
 
-    if statistical_checks:
-        stat_status = "PASSED" if all(c.passed for c in statistical_checks) else "FAILED"
-        statistical = LevelVerdict(stat_status, [c.to_dict() for c in statistical_checks])
+    # NOT_APPLICABLE checks (e.g. a support metric that could not be computed) are
+    # neither support nor contradiction: they are excluded from the gate. Only
+    # PASSED/FAILED checks are "applicable". A single applicable FAILED makes the
+    # statistical level FAILED (a real contradiction lowers confidence).
+    applicable = [c for c in (statistical_checks or []) if c.status in ("PASSED", "FAILED")]
+    n_pass = sum(1 for c in applicable if c.passed)
+    if not applicable:
+        statistical = LevelVerdict("NOT_APPLICABLE", [c.to_dict() for c in (statistical_checks or [])])
     else:
-        statistical = LevelVerdict("NOT_APPLICABLE", [])
+        stat_status = "PASSED" if all(c.passed for c in applicable) else "FAILED"
+        statistical = LevelVerdict(stat_status, [c.to_dict() for c in (statistical_checks or [])])
 
     not_allowed = list(DEFAULT_NOT_ALLOWED)
     if extra_not_allowed:
@@ -243,10 +249,7 @@ def build_interpretation(
         biological = LevelVerdict("LIMITED", [{"name": "negative_result", "status": "LIMITED",
                                               "detail": negative.category.value}])
         confidence = "low"
-    elif (
-        statistical.status == "PASSED"
-        and sum(1 for c in (statistical_checks or []) if c.passed) >= min_statistical_evidence
-    ):
+    elif statistical.status == "PASSED" and n_pass >= min_statistical_evidence:
         # Technical + >=N independent statistical evidences: interpretable, but
         # biology still bounded by standing prohibitions.
         sci = ScientificState.BIOLOGICALLY_INTERPRETABLE

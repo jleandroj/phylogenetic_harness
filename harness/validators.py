@@ -96,6 +96,23 @@ def fasta_valid(path: str | Path, **_: Any) -> CheckResult:
     )
 
 
+def alignment_valid(path: str | Path, *, min_sequences: int = 2, **_: Any) -> CheckResult:
+    """A multiple sequence alignment: valid FASTA, >=min_sequences, all equal length."""
+    base = fasta_valid(path)
+    if not base.passed:
+        return CheckResult("alignment_valid", "FAILED", f"not valid FASTA: {base.detail}")
+    lengths = base.data["lengths"]
+    n = len(lengths)
+    if n < min_sequences:
+        return CheckResult("alignment_valid", "FAILED", f"only {n} sequences (< {min_sequences})")
+    distinct = set(lengths.values())
+    if len(distinct) != 1:
+        return CheckResult("alignment_valid", "FAILED", f"unequal lengths: {sorted(distinct)}")
+    width = next(iter(distinct))
+    return CheckResult("alignment_valid", "PASSED", f"{n} sequences x {width} columns",
+                       {"n_sequences": n, "width": width})
+
+
 # ---- Newick tree -------------------------------------------------------------
 
 def _newick_taxa(text: str) -> list[str]:
@@ -213,6 +230,7 @@ class ValidatorRegistry:
             "file_exists": file_exists,
             "file_nonempty": file_nonempty,
             "fasta_valid": fasta_valid,
+            "alignment_valid": alignment_valid,
             "newick_valid": newick_valid,
             "vcf_header_valid": vcf_header_valid,
         }.items():
