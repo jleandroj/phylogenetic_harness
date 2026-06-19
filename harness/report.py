@@ -58,7 +58,9 @@ class ReportGenerator:
         md_path = self.run_dir / "report.md"
         json_path = self.run_dir / "report.json"
         md_path.write_text("".join(lines), encoding="utf-8")
-        json_path.write_text(json.dumps(report, indent=2, sort_keys=True, default=str), encoding="utf-8")
+        # No default=str (audit P3.10): a non-serialisable value is a bug we want to
+        # surface as a loud TypeError, not silently stringify into the report.
+        json_path.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
         return {"markdown": str(md_path), "json": str(json_path)}
 
     @staticmethod

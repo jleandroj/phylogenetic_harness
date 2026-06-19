@@ -92,10 +92,18 @@ def capture_environment(
     *,
     timestamp_iso: str,
     disk_path: str | os.PathLike[str] = ".",
+    cache: bool = False,
 ) -> dict[str, Any]:
-    """Capture the environment into ``out_dir`` and return the snapshot dict."""
+    """Capture the environment into ``out_dir`` and return the snapshot dict.
+
+    With ``cache=True`` (audit P3.10), if a snapshot already exists in ``out_dir``
+    it is reused instead of re-running the (slow) probe commands like ``conda info``.
+    """
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    snap_path = out / "ENVIRONMENT.snapshot.json"
+    if cache and snap_path.exists():
+        return json.loads(snap_path.read_text(encoding="utf-8"))
 
     # 1. Probe commands -> commands.log + structured map.
     commands: dict[str, Any] = {}

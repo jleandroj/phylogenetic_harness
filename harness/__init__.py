@@ -30,6 +30,7 @@ from . import (  # noqa: F401
     resume,
     run,
     runner,
+    sandbox,
     scheduler,
     science,
     seeds,

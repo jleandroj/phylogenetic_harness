@@ -108,9 +108,16 @@ class ToolContract:
         }
 
 
+class UntrustedToolPathError(Exception):
+    """Raised when a tool's executable resolves outside the trusted path prefixes."""
+
+
 class ToolRegistry:
-    def __init__(self) -> None:
+    def __init__(self, *, trusted_prefixes: list[str] | None = None) -> None:
         self._tools: dict[str, ToolContract] = {}
+        # Audit P1.8: if set, a tool is only runnable when its executable lives
+        # under one of these path prefixes (defence against PATH hijacking).
+        self.trusted_prefixes = [str(p) for p in trusted_prefixes] if trusted_prefixes else None
 
     def register(self, contract: ToolContract, *, detect: bool = True) -> ToolContract:
         if detect:
@@ -133,13 +140,21 @@ class ToolRegistry:
         return self._tools[tool_id]
 
     def require_runnable(self, tool_id: str) -> ToolContract:
-        """Return the contract only if registered AND its executable is present."""
+        """Return the contract only if registered, present, AND (when configured)
+        its executable lives under a trusted path prefix."""
         contract = self.get(tool_id)
         if not contract.available:
             raise ToolUnavailableError(
                 f"tool '{tool_id}' is registered but unavailable on this host "
                 f"(executable not found)"
             )
+        if self.trusted_prefixes is not None:
+            path = contract.executable_path or ""
+            if not any(path.startswith(prefix) for prefix in self.trusted_prefixes):
+                raise UntrustedToolPathError(
+                    f"tool '{tool_id}' executable {path!r} is not under a trusted prefix "
+                    f"{self.trusted_prefixes}"
+                )
         return contract
 
     def all(self) -> dict[str, ToolContract]:

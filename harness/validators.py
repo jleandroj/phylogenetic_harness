@@ -58,7 +58,8 @@ def _parse_fasta(path: Path) -> tuple[list[str], dict[str, int], set[str]]:
         for line in fh:
             line = line.rstrip("\n")
             if line.startswith(">"):
-                current = line[1:].split()[0]
+                parts = line[1:].split()
+                current = parts[0] if parts else ""  # tolerate a bare ">" header
                 names.append(current)
                 lengths[current] = 0
             elif current is not None:
