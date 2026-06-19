@@ -169,6 +169,39 @@ def _cmd_phylo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_compare(args: argparse.Namespace) -> int:
+    """Comparative slice: align + RAxML-bootstrap a tree per gene, compare topologies."""
+    from . import manifest
+    from .aggregate import aggregate_run
+    from .bio import run_comparative_slice
+    genes = {}
+    for spec in args.genes:
+        if "=" not in spec:
+            sys.stderr.write(f"gene spec must be name=path, got {spec!r}\n")
+            return 2
+        name, path = spec.split("=", 1)
+        genes[name] = path
+    cfg = RunConfig(run_id=args.run_id or new_run_id(), mode="full", executor="local")
+    run = Run(cfg)
+    run.capture_environment()
+    run.load_tools(manifest.DEFAULT_TOOLS_DIR)
+    run.write_tools_lock()
+    out = run_comparative_slice(run.build_runner(), run_id=cfg.run_id, genes=genes,
+                                workdir=run.dir / "work", nboot=args.nboot)
+    aggregate_run(run.dir)
+    run.finish()
+    sys.stdout.write(json.dumps({
+        "run_dir": str(run.dir),
+        "genes": {n: {"tree": (g.get("tree") or {}).get("status_technical"),
+                      "scientific": (g.get("tree") or {}).get("status_scientific")}
+                  for n, g in out["genes"].items()},
+        "comparisons": out["comparisons"],
+        "discordant": out["discordant"],
+        "note": out["note"],
+    }, indent=2) + "\n")
+    return 0
+
+
 def _cmd_resume(args: argparse.Namespace) -> int:
     from .resume import resume_run
     summary = resume_run(args.run_dir)
@@ -207,6 +240,12 @@ def build_parser() -> argparse.ArgumentParser:
     pph.add_argument("fasta")
     pph.add_argument("--run-id", dest="run_id", default=None)
     pph.set_defaults(func=_cmd_phylo)
+
+    pc = sub.add_parser("compare", help="comparative slice: per-gene RAxML trees + RF discordance")
+    pc.add_argument("genes", nargs="+", metavar="name=fasta")
+    pc.add_argument("--nboot", type=int, default=100)
+    pc.add_argument("--run-id", dest="run_id", default=None)
+    pc.set_defaults(func=_cmd_compare)
 
     prs = sub.add_parser("resume", help="resume a crashed run; finish unfinished tasks")
     prs.add_argument("run_dir")

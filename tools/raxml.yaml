@@ -1,0 +1,14 @@
+tool_id: raxmlHPC
+tool_name: RAxML
+version_command: "raxmlHPC -v"
+requires_gpu: false
+requires_network: false
+input_formats: [FASTA, PHYLIP]
+output_formats: [Newick]
+seed_flag: null   # RAxML needs two seeds (-x, -p); injected explicitly by the driver
+risks:
+  - refuses to run if RAxML_*.<name> output files already exist in -w
+  - bootstrap support is model- and alignment-dependent, not absolute truth
+validators:
+  - exit_code_zero
+  - newick_valid

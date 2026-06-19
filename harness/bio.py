@@ -80,6 +80,32 @@ def alignment_evidence(aligned_fasta: str | Path) -> list[CheckResult]:
     ]
 
 
+def raxml_bootstrap_evidence(newick: str | Path, *, min_mean_support: float = 70.0) -> list[CheckResult]:
+    """Mean bootstrap support (0-100) from a RAxML bipartitions tree — REAL
+    statistical evidence (classical bootstrap, not SH-like)."""
+    try:
+        import dendropy
+        tree = dendropy.Tree.get(path=str(newick), schema="newick", preserve_underscores=True)
+    except Exception as exc:  # noqa: BLE001
+        return [CheckResult("raxml_tree_parse", "FAILED", f"could not parse tree: {exc}")]
+    supports = []
+    for node in tree.internal_nodes():
+        if node.label:
+            try:
+                supports.append(float(node.label))
+            except ValueError:
+                pass
+    if not supports:
+        return [CheckResult("raxml_bootstrap", "NOT_APPLICABLE", "no bootstrap values")]
+    mean = sum(supports) / len(supports)
+    # >=70% mean bootstrap is the conventional "well-supported" threshold; below
+    # that it is insufficient support (NOT_APPLICABLE), not a contradiction.
+    status = "PASSED" if mean >= min_mean_support else "NOT_APPLICABLE"
+    return [CheckResult("raxml_mean_bootstrap", status,
+                        f"mean bootstrap {mean:.1f}% over {len(supports)} nodes",
+                        {"mean_bootstrap": round(mean, 2), "n_nodes": len(supports)})]
+
+
 def tree_support_evidence(newick: str | Path) -> list[CheckResult]:
     """Mean internal-node support from the inferred tree (FastTree SH-like supports)."""
     try:
@@ -126,11 +152,55 @@ def tree_fasttree_spec() -> TaskTypeSpec:
     )
 
 
+def raxml_tree_spec() -> TaskTypeSpec:
+    """RAxML rapid bootstrap + ML search. Writes RAxML_bipartitions.<name> in -w;
+    not retryable because RAxML refuses to overwrite its own output files."""
+    return TaskTypeSpec(
+        task_type="tree_raxml", tool_id="raxmlHPC",
+        build_argv=lambda p: [
+            "raxmlHPC", "-f", "a", "-x", str(p["seed"]), "-p", str(p["seed"]),
+            "-N", str(p.get("nboot", 100)), "-m", p.get("model", "GTRGAMMA"),
+            "-s", p["input"], "-n", p["name"], "-w", p["workdir"],
+        ],
+        validators=["newick_valid"],
+        default_failure_policy=FailurePolicy(retryable=False, max_retries=0, timeout_seconds=1800),
+    )
+
+
 PHYLO_NOT_ALLOWED = [
     "This tree is one estimate under one model and alignment; it is not THE true tree.",
     "Local SH-like supports are not classical bootstrap and do not prove a clade.",
     "Gene-tree topology may differ from the species tree (ILS / introgression).",
 ]
+
+
+def compare_gene_trees(tree_a: str | Path, tree_b: str | Path) -> dict[str, Any]:
+    """Robinson-Foulds comparison of two gene trees on a shared taxon namespace.
+
+    Returns the RF distance, its normalisation, and whether the topologies are
+    congruent. Discordance is REPORTED, never assumed away — it is the honest
+    signal of ILS / introgression / gene-specific history.
+    """
+    import dendropy
+    from dendropy.calculate import treecompare
+
+    tns = dendropy.TaxonNamespace()
+    ta = dendropy.Tree.get(path=str(tree_a), schema="newick", taxon_namespace=tns,
+                           preserve_underscores=True)
+    tb = dendropy.Tree.get(path=str(tree_b), schema="newick", taxon_namespace=tns,
+                           preserve_underscores=True)
+    ta.encode_bipartitions()
+    tb.encode_bipartitions()
+    rf = treecompare.symmetric_difference(ta, tb)
+    n_taxa = len(tns)
+    max_rf = max(1, 2 * (n_taxa - 3))  # unrooted binary upper bound
+    return {
+        "rf_distance": rf,
+        "max_rf": max_rf,
+        "normalized_rf": round(rf / max_rf, 4),
+        "congruent": rf == 0,
+        "n_taxa": n_taxa,
+    }
 
 
 def run_phylo_slice(
@@ -173,3 +243,84 @@ def run_phylo_slice(
         limitations=["Approximate ML; supports are SH-like, not bootstrap."],
     )
     return {"msa": msa_bundle, "tree": tree_bundle}
+
+
+def run_raxml_tree(
+    runner: TaskRunner, *, run_id: str, aligned: str | Path, workdir: str | Path,
+    name: str, nboot: int = 100,
+) -> dict[str, Any]:
+    """RAxML rapid-bootstrap ML tree with REAL bootstrap evidence. The seed is
+    derived deterministically from the seed manager (reproducibility)."""
+    workdir = Path(workdir).resolve()
+    workdir.mkdir(parents=True, exist_ok=True)
+    seed = runner.seeds.derive(run_id, "raxml", name) % 1_000_000 if runner.seeds else 12345
+    bip = workdir / f"RAxML_bipartitions.{name}"
+
+    task = raxml_tree_spec().build_task(
+        task_id=f"{run_id}.raxml_{name}", run_id=run_id,
+        params={"input": str(Path(aligned).resolve()), "name": name, "seed": seed,
+                "nboot": nboot, "workdir": str(workdir)},
+        inputs=[str(aligned)], outputs_expected=[str(bip)],
+        resources=ResourceRequest(cpus=2, memory_gb=2),
+    )
+
+    def hook(_t: Task, _o: list[str]) -> list[CheckResult]:
+        return alignment_evidence(aligned) + raxml_bootstrap_evidence(bip)
+
+    bundle = runner.run_task(
+        task, statistical_evidence_hook=hook,
+        allowed=["RAxML inferred an ML gene tree with classical bootstrap support."],
+        limitations=["Bootstrap is conditional on the model (GTRGAMMA) and the alignment."],
+    )
+    return {"tree": bundle, "tree_path": str(bip), "seed": seed}
+
+
+def run_comparative_slice(
+    runner: TaskRunner, *, run_id: str, genes: dict[str, str], workdir: str | Path,
+    nboot: int = 100,
+) -> dict[str, Any]:
+    """Align + RAxML-bootstrap a tree for EACH gene, then compare topologies
+    (gene-tree discordance). Returns per-gene bundles + pairwise RF comparisons."""
+    workdir = Path(workdir)
+    per_gene: dict[str, Any] = {}
+    for name, fasta in genes.items():
+        gdir = workdir / name
+        aligned = gdir / "aligned.fasta"
+        msa = msa_mafft_spec().build_task(
+            task_id=f"{run_id}.msa_{name}", run_id=run_id,
+            params={"input": str(fasta), "stdout_to": str(aligned)},
+            inputs=[str(fasta)], outputs_expected=[str(aligned)],
+            resources=ResourceRequest(cpus=2, memory_gb=2),
+        )
+        gdir.mkdir(parents=True, exist_ok=True)
+        msa_bundle = runner.run_task(msa, limitations=["Alignment quality bounds the gene tree."])
+        if msa_bundle["status_technical"] != "SUCCEEDED":
+            per_gene[name] = {"msa": msa_bundle, "tree": None, "tree_path": None}
+            continue
+        rax = run_raxml_tree(runner, run_id=run_id, aligned=aligned, workdir=gdir / "raxml",
+                             name=name, nboot=nboot)
+        per_gene[name] = {"msa": msa_bundle, **rax}
+
+    # Pairwise topology comparison across genes whose trees succeeded.
+    built = {n: g["tree_path"] for n, g in per_gene.items()
+             if g.get("tree") and g["tree"]["status_technical"] == "SUCCEEDED"}
+    comparisons = []
+    names = sorted(built)
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            a, b = names[i], names[j]
+            cmp = compare_gene_trees(built[a], built[b])
+            cmp["pair"] = [a, b]
+            comparisons.append(cmp)
+
+    any_discordant = any(not c["congruent"] for c in comparisons)
+    return {
+        "genes": per_gene,
+        "comparisons": comparisons,
+        "discordant": any_discordant,
+        # Honest interpretation: discordance is expected biology, not an error.
+        "note": ("Gene trees disagree (RF>0): consistent with ILS/introgression/"
+                 "gene-specific history — NOT evidence of a single true tree."
+                 if any_discordant else
+                 "Gene trees are congruent on these data; congruence is not proof of the species tree."),
+    }
