@@ -77,3 +77,35 @@ def test_report_flags_low_confidence_species_tree(tmp_path):
     md = open(generate_pipeline_report(rd)["markdown"]).read()
     assert "built, LOW_CONFIDENCE" in md
     assert "under-powered" in md.split("## 5.")[1].split("## 6.")[0]
+
+
+def _gene_tree_bundle(rd, gene, treefile_text):
+    tf = rd / f"{gene}.treefile"
+    tf.write_text(treefile_text)
+    bundle = {
+        "task_id": f"r.iqtree_{gene}", "task_type": "tree_iqtree_mfp", "tool_id": "iqtree",
+        "status_technical": "SUCCEEDED", "status_scientific": "BIOLOGICALLY_INTERPRETABLE",
+        "degenerate": False, "validators_passed": True,
+        "outputs": [{"path": str(tf), "sha256": "sha256:x"}],
+        "execution": {"resources": {}},
+        "interpretation": {"interpretation_not_allowed": ["does not prove a single true tree"],
+                          "validation": {"statistical": {"checks": []}}},
+    }
+    (rd / "results" / f"r.iqtree_{gene}.validation.json").write_text(json.dumps(bundle))
+
+
+def test_report_does_not_call_weak_rf_difference_ils(tmp_path):
+    """Two gene trees that DIFFER topologically but with WEAK support must be
+    reported as estimation error, NOT well-supported discordance / ILS."""
+    rd = tmp_path / "run"
+    (rd / "results").mkdir(parents=True)
+    (rd / "RUN_CONFIG.json").write_text(json.dumps({"run_id": "r", "config_hash": "h", "seed": 1}))
+    (rd / "TOOLS.lock.json").write_text(json.dumps({"iqtree": {"version": "IQ-TREE 3"}}))
+    # Incompatible topologies, but support 40/35 (< 95) -> not real discordance.
+    _gene_tree_bundle(rd, "A", "((X:0.1,Y:0.1)40:0.2,(Z:0.1,W:0.1)40:0.2,V:0.1);")
+    _gene_tree_bundle(rd, "B", "((X:0.1,Z:0.1)35:0.2,(Y:0.1,W:0.1)35:0.2,V:0.1);")
+    md = open(generate_pipeline_report(rd)["markdown"]).read()
+    assert "0 WELL-SUPPORTED discordant" in md
+    sec4 = md.split("## 4.")[1].split("## 5.")[0]
+    assert "no statistically supported discordance" in sec4
+    assert "NOT ILS" in md

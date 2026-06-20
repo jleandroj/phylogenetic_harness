@@ -64,10 +64,17 @@ def generate_pipeline_report(run_dir: str | Path) -> dict[str, str]:
                 if b.get("status_scientific") in ("LOW_CONFIDENCE", "INCONCLUSIVE", "MODEL_LIMITED")]
 
     # Recompute gene-tree discordance + species-vs-gene from the trees on disk.
+    # Distinguish RAW RF difference from WELL-SUPPORTED conflict (real ILS signal),
+    # so the report never calls estimation noise "discordant" (audit round 4).
     discordance_lines: list[str] = []
     species_lines: list[str] = []
+    n_supported_disc = 0
     try:
         from .bio import compare_gene_trees
+        from .phylo_guards import supported_conflict
+        # support threshold by method: UFBoot >=95 (iqtree) else bootstrap >=70.
+        is_iqtree = any(b.get("task_type") == "tree_iqtree_mfp" for _, b in gene_trees)
+        thr = 95.0 if is_iqtree else 70.0
         tree_paths = {}
         for tid, b in gene_trees:
             for o in b.get("outputs", []):
@@ -77,7 +84,14 @@ def generate_pipeline_report(run_dir: str | Path) -> dict[str, str]:
         for i in range(len(names)):
             for j in range(i + 1, len(names)):
                 c = compare_gene_trees(tree_paths[names[i]], tree_paths[names[j]])
-                verdict = "congruent" if c["congruent"] else "DISCORDANT"
+                sc = supported_conflict(tree_paths[names[i]], tree_paths[names[j]], min_support=thr)
+                if sc["has_supported_conflict"]:
+                    n_supported_disc += 1
+                    verdict = "DISCORDANT (well-supported conflict — real signal)"
+                elif not c["congruent"]:
+                    verdict = "differs by RF but NOT well-supported — likely estimation error, NOT ILS"
+                else:
+                    verdict = "congruent"
                 discordance_lines.append(
                     f"{names[i]} vs {names[j]}: RF={c['rf_distance']}/{c['max_rf']} "
                     f"(norm {c['normalized_rf']}) — {verdict}")
@@ -111,18 +125,24 @@ def generate_pipeline_report(run_dir: str | Path) -> dict[str, str]:
         ] if x
     ]
     s["3. What failed"] = ([f"{tid}: {st}" for tid, st in failed] or ["none"])
+    # Only WELL-SUPPORTED conflict is a genuine negative result for concordance.
+    supported_lines = [x for x in discordance_lines if "well-supported conflict" in x]
+    unsupported_lines = [x for x in discordance_lines if "NOT well-supported" in x]
     s["4. What was negative"] = (
-        discordance_lines
-        + ["Gene-tree discordance (RF>0) is a NEGATIVE result for tree concordance, "
+        supported_lines
+        + ["Well-supported gene-tree discordance is a NEGATIVE result for concordance, "
            "consistent with ILS/introgression — not a technical failure."]
-        if any("DISCORDANT" in x for x in discordance_lines) else ["no negative results recorded"]
+        if supported_lines else
+        ["no statistically supported discordance "
+         f"({len(unsupported_lines)} pair(s) differ by raw RF but below the support threshold)"]
     )
     # Derive the ASTRAL species-tree state from the actual bundle (NOT hardcoded).
     astral_state = astral[0][1].get("status_scientific") if astral else None
     astral_low = astral_state in ("LOW_CONFIDENCE", "INCONCLUSIVE", "MODEL_LIMITED")
     s["5. What was inconclusive"] = (
         [f"{tid}: {st}" for tid, st in low_conf]
-        + (["ASTRAL species tree is under-powered (few loci)." ] if astral_low else [])
+        + unsupported_lines  # raw-RF differences with weak support are inconclusive, not ILS
+        + (["ASTRAL species tree is under-powered (few loci)."] if astral_low else [])
     ) or ["none"]
     s["6. What was technically valid"] = [
         f"{tid}: technical={b['status_technical']}, validators_passed={b.get('validators_passed')}"
@@ -185,8 +205,12 @@ def generate_pipeline_report(run_dir: str | Path) -> dict[str, str]:
     s["12. Remaining risks"] = risks
 
     actions = []
-    if any("DISCORDANT" in x for x in discordance_lines):
-        actions.append("Gene trees disagree — wire reconciliation (Notung) or test ILS vs introgression.")
+    if n_supported_disc > 0:
+        actions.append("Well-supported gene-tree discordance — wire reconciliation (Notung) or "
+                       "test ILS vs introgression.")
+    elif unsupported_lines:
+        actions.append("Topological wobble exists but is not well-supported — add more/longer "
+                       "loci (genome-scale) before claiming ILS.")
     else:
         actions.append("Gene trees are concordant — add independent (e.g. nuclear) loci to test for ILS.")
     if astral and not astral_low:
@@ -194,7 +218,7 @@ def generate_pipeline_report(run_dir: str | Path) -> dict[str, str]:
     actions.append("Persist the task plan so a long pipeline run is resumable after interruption.")
     s["13. Recommended next actions"] = actions
 
-    n_disc = sum(1 for x in discordance_lines if "DISCORDANT" in x)
+    n_disc = n_supported_disc
     species_desc = "not built"
     if astral:
         species_desc = f"built, {astral_state}"  # the ACTUAL scientific state, not a guess
@@ -202,7 +226,8 @@ def generate_pipeline_report(run_dir: str | Path) -> dict[str, str]:
         f"Comparative pipeline over {len(msas)} gene(s): "
         f"{len(succeeded)}/{len(bundles)} tasks SUCCEEDED, {len(interpretable)} biologically interpretable, "
         f"{len(failed)} failed, {len(degenerate)} degenerate. "
-        f"{n_disc} discordant gene-tree pair(s). "
+        f"{n_disc} WELL-SUPPORTED discordant gene-tree pair(s) "
+        f"({len(unsupported_lines)} differ by raw RF but below the support threshold). "
         f"Species tree: {species_desc}. "
         "Technical success never promoted to a biological conclusion without evidence."
     )
