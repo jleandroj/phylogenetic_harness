@@ -144,6 +144,17 @@ def msa_mafft_spec() -> TaskTypeSpec:
     )
 
 
+def trim_spec() -> TaskTypeSpec:
+    """Built-in gappy-column trimmer run as an audited task (audit round 4 #6)."""
+    return TaskTypeSpec(
+        task_type="trim_alignment", tool_id="trimmer",
+        build_argv=lambda p: ["python", "-m", "harness.trimtool", p["input"], p["output"],
+                              str(p.get("max_gap_fraction", 0.5))],
+        validators=["alignment_valid"],
+        default_failure_policy=FailurePolicy(retryable=True, max_retries=1, timeout_seconds=120),
+    )
+
+
 def tree_fasttree_spec() -> TaskTypeSpec:
     return TaskTypeSpec(
         task_type="tree_fasttree", tool_id="fasttree",
@@ -541,7 +552,7 @@ def run_comparative_slice(
 def run_phylogenomic_pipeline(
     runner: TaskRunner, *, run_id: str, genes: dict[str, str], workdir: str | Path,
     nboot: int = 1000, model_selection: bool = True, species_tree: bool = True,
-    loci_independent: bool | None = None,
+    loci_independent: bool | None = None, trim: bool = True, max_gap_fraction: float = 0.5,
 ) -> dict[str, Any]:
     """End-to-end comparative pipeline: per gene, align (MAFFT) then build a tree
     with model selection (IQ-TREE ModelFinder, if available) else RAxML bootstrap;
@@ -571,16 +582,37 @@ def run_phylogenomic_pipeline(
         if msa_bundle["status_technical"] != "SUCCEEDED":
             per_gene[name] = {"msa": msa_bundle, "tree": None, "tree_path": None, "method": None}
             continue
+
+        # QC: trim gappy columns before tree inference (audit round 4 #6).
+        tree_input = aligned
+        trim_bundle = None
+        if trim and "trimmer" in runner.tools.all() and runner.tools.get("trimmer").available:
+            trimmed = gdir / "aligned.trimmed.fasta"
+            trim_task = trim_spec().build_task(
+                task_id=f"{run_id}.trim_{name}", run_id=run_id,
+                params={"input": str(aligned), "output": str(trimmed),
+                        "max_gap_fraction": max_gap_fraction},
+                inputs=[str(aligned)], outputs_expected=[str(trimmed)],
+                resources=ResourceRequest(cpus=1, memory_gb=1),
+            )
+            trim_bundle = taskstore.run_or_resume(
+                runner, trim_task,
+                limitations=[f"Gappy columns (gap fraction > {max_gap_fraction}) removed."])
+            if trim_bundle["status_technical"] == "SUCCEEDED":
+                tree_input = trimmed  # tree built on the trimmed alignment
+
         if use_model:
-            res = select_model_and_tree(runner, run_id=run_id, aligned=aligned,
+            res = select_model_and_tree(runner, run_id=run_id, aligned=tree_input,
                                         workdir=gdir / "iqtree", name=name, nboot=nboot)
             res["method"] = "iqtree_mfp"
         else:
-            res = run_raxml_tree(runner, run_id=run_id, aligned=aligned,
+            res = run_raxml_tree(runner, run_id=run_id, aligned=tree_input,
                                  workdir=gdir / "raxml", name=name, nboot=min(nboot, 100))
             res["method"] = "raxml"
             res["model"] = "GTRGAMMA (fixed)"
-        per_gene[name] = {"msa": msa_bundle, **res}
+        res["trim"] = trim_bundle["execution"].get("stdout_path") if trim_bundle else None
+        res["trimmed"] = tree_input != aligned
+        per_gene[name] = {"msa": msa_bundle, "trim": trim_bundle, **res}
         if res["tree"]["status_technical"] == "SUCCEEDED":
             gene_tree_paths.append(res["tree_path"])
 

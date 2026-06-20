@@ -46,7 +46,9 @@ from . import (  # noqa: F401,E402
     task_types,
     tasks,
     taskstore,
+    toolpaths,
     tools,
+    trimtool,
     validators,
     workers,
 )

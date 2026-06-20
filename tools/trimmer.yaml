@@ -1,0 +1,10 @@
+# Built-in gappy-column trimmer (python -m harness.trimtool). Used when trimAl is
+# absent, recorded as the engine so provenance is explicit.
+tool_id: trimmer
+tool_name: harness builtin trimmer
+version_command: "python --version"
+input_formats: [FASTA]
+output_formats: [FASTA]
+validators:
+  - exit_code_zero
+  - alignment_valid

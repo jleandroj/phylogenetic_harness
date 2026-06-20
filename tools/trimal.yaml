@@ -1,0 +1,10 @@
+# Canonical external alignment trimmer. Registered-but-unavailable until installed;
+# the harness uses its built-in trimmer and records which engine ran.
+tool_id: trimal
+tool_name: trimAl
+version_command: "trimal --version"
+input_formats: [FASTA, PHYLIP]
+output_formats: [FASTA]
+validators:
+  - exit_code_zero
+  - alignment_valid
