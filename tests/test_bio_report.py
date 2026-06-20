@@ -43,3 +43,37 @@ def test_report_json_roundtrips(tmp_path):
     data = json.loads(open(paths["json"]).read())
     assert data["run_id"] == "r"
     assert data["config_hash"] == "h"
+
+
+def _add_astral(rd, state):
+    bundle = {
+        "task_id": "r.astral", "task_type": "species_tree_astral", "tool_id": "astral",
+        "status_technical": "SUCCEEDED", "status_scientific": state,
+        "degenerate": False, "validators_passed": True,
+        "outputs": [{"path": str(rd / "species.nwk"), "sha256": "sha256:sp"}],
+        "execution": {"resources": {}},
+        "interpretation": {"interpretation_not_allowed": ["ASTRAL assumes ILS only"],
+                          "validation": {"statistical": {"checks": []}}},
+    }
+    (rd / "results" / "r.astral.validation.json").write_text(json.dumps(bundle))
+    (rd / "species.nwk").write_text("(taxon_0,(taxon_1,(taxon_2,taxon_3)));")
+
+
+def test_report_does_not_hardcode_species_state(tmp_path):
+    """Regression: the summary must reflect the ASTRAL bundle's ACTUAL scientific
+    state, never a hardcoded 'LOW_CONFIDENCE' (a report must not misreport)."""
+    rd = _fake_run(tmp_path)
+    _add_astral(rd, "BIOLOGICALLY_INTERPRETABLE")
+    md = open(generate_pipeline_report(rd)["markdown"]).read()
+    assert "built, BIOLOGICALLY_INTERPRETABLE" in md
+    assert "LOW_CONFIDENCE on few loci" not in md
+    sec5 = md.split("## 5.")[1].split("## 6.")[0]
+    assert "under-powered" not in sec5
+
+
+def test_report_flags_low_confidence_species_tree(tmp_path):
+    rd = _fake_run(tmp_path)
+    _add_astral(rd, "LOW_CONFIDENCE")
+    md = open(generate_pipeline_report(rd)["markdown"]).read()
+    assert "built, LOW_CONFIDENCE" in md
+    assert "under-powered" in md.split("## 5.")[1].split("## 6.")[0]

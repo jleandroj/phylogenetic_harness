@@ -117,10 +117,12 @@ def generate_pipeline_report(run_dir: str | Path) -> dict[str, str]:
            "consistent with ILS/introgression — not a technical failure."]
         if any("DISCORDANT" in x for x in discordance_lines) else ["no negative results recorded"]
     )
+    # Derive the ASTRAL species-tree state from the actual bundle (NOT hardcoded).
+    astral_state = astral[0][1].get("status_scientific") if astral else None
+    astral_low = astral_state in ("LOW_CONFIDENCE", "INCONCLUSIVE", "MODEL_LIMITED")
     s["5. What was inconclusive"] = (
         [f"{tid}: {st}" for tid, st in low_conf]
-        + (["ASTRAL species tree kept LOW_CONFIDENCE: too few loci for a powered "
-            "coalescent estimate."] if astral else [])
+        + (["ASTRAL species tree is under-powered (few loci)." ] if astral_low else [])
     ) or ["none"]
     s["6. What was technically valid"] = [
         f"{tid}: technical={b['status_technical']}, validators_passed={b.get('validators_passed')}"
@@ -157,25 +159,51 @@ def generate_pipeline_report(run_dir: str | Path) -> dict[str, str]:
     outs = [f"output {o['path'].split('/')[-1]}: {o.get('sha256')}"
             for b in bundles.values() for o in b.get("outputs", []) if o.get("sha256")]
     s["11. Data included / excluded"] = (incl + outs) or ["(no input checksums frozen)"]
-    s["12. Remaining risks"] = [
-        "Synthetic test genes only — never validated on real loci.",
-        "Species tree from few loci has low statistical power.",
-        "Sandbox not exercised; tools run with user permissions.",
-        "UFBoot/bootstrap below threshold on these short alignments (recorded, not hidden).",
-    ]
-    s["13. Recommended next actions"] = [
-        "Run on a real small ortholog set and see what breaks.",
-        "Add more loci before trusting the ASTRAL species tree.",
-        "Wire gene/species-tree reconciliation (Notung) to turn discordance into a biological hypothesis.",
-    ]
+    # Risks DERIVED from what actually happened, not a fixed template (a hardcoded
+    # risk list is itself a way for a report to mislead).
+    risks = ["Sandbox not exercised; tools run with user permissions.",
+             "Provenance is only as good as the input checksums frozen at run time "
+             "(see section 11); no RUN_MANIFEST means inputs were not checksum-frozen."
+             if not manifest else
+             "Input provenance frozen in RUN_MANIFEST (checksums in section 11)."]
+    # Branch support below threshold on some loci?
+    weak_support = []
+    for tid, b in gene_trees:
+        for cname in ("iqtree_mean_ufboot", "raxml_mean_bootstrap", "tree_mean_support"):
+            c = _find_check(b, cname)
+            if c and c["status"] == "NOT_APPLICABLE":
+                weak_support.append(tid.split(".")[-1])
+    if weak_support:
+        risks.append(f"Per-gene branch support below the conventional threshold on: "
+                     f"{', '.join(sorted(set(weak_support)))} (recorded, not hidden).")
+    if astral:
+        n_loci_c = _find_check(astral[0][1], "astral_n_loci")
+        if astral_low:
+            risks.append("Species tree is under-powered (few loci) — treat as a summary, not settled.")
+        elif n_loci_c:
+            risks.append(f"Species tree rests on {len(gene_trees)} loci; more loci would strengthen it.")
+    s["12. Remaining risks"] = risks
+
+    actions = []
+    if any("DISCORDANT" in x for x in discordance_lines):
+        actions.append("Gene trees disagree — wire reconciliation (Notung) or test ILS vs introgression.")
+    else:
+        actions.append("Gene trees are concordant — add independent (e.g. nuclear) loci to test for ILS.")
+    if astral and not astral_low:
+        actions.append("Species tree is well-supported here; validate against an independent dataset.")
+    actions.append("Persist the task plan so a long pipeline run is resumable after interruption.")
+    s["13. Recommended next actions"] = actions
 
     n_disc = sum(1 for x in discordance_lines if "DISCORDANT" in x)
+    species_desc = "not built"
+    if astral:
+        species_desc = f"built, {astral_state}"  # the ACTUAL scientific state, not a guess
     summary = (
         f"Comparative pipeline over {len(msas)} gene(s): "
         f"{len(succeeded)}/{len(bundles)} tasks SUCCEEDED, {len(interpretable)} biologically interpretable, "
         f"{len(failed)} failed, {len(degenerate)} degenerate. "
         f"{n_disc} discordant gene-tree pair(s). "
-        f"Species tree: {'built (LOW_CONFIDENCE on few loci)' if astral else 'not built'}. "
+        f"Species tree: {species_desc}. "
         "Technical success never promoted to a biological conclusion without evidence."
     )
 

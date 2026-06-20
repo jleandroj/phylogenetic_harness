@@ -225,6 +225,13 @@ def _cmd_pipeline(args: argparse.Namespace) -> int:
         nboot=args.nboot, model_selection=not args.no_model_selection,
         species_tree=not args.no_species_tree,
     )
+    # Freeze provenance (Q1) so the run is reproducible/auditable.
+    tools_lock = json.loads((run.dir / "TOOLS.lock.json").read_text())
+    manifest.write_manifest(
+        run.dir, run_config={**cfg.to_dict(), "config_hash": cfg.config_hash},
+        tools_lock=tools_lock, seed_record=run.seeds.record(),
+        input_paths=[p for p in genes.values() if Path(p).exists()],
+    )
     aggregate_run(run.dir)
     from .bio_report import generate_pipeline_report
     report_paths = generate_pipeline_report(run.dir)
