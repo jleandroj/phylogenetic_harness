@@ -60,9 +60,8 @@ class EventType(str, Enum):
     APPROVAL_REQUIRED = "approval_required"
     APPROVAL_GRANTED = "approval_granted"
     APPROVAL_DENIED = "approval_denied"
-    # Hooks (RESERVED, audit P3.13): there is no hook subsystem yet; these names
-    # are reserved so the vocabulary is stable when one lands. They are never
-    # emitted today — do not rely on them.
+    # Hooks (audit round 4 #1): emitted by harness.hooks.HookRegistry when a
+    # lifecycle hook fires/succeeds/fails (pre_task / post_task / on_error).
     HOOK_FIRED = "hook_fired"
     HOOK_SUCCEEDED = "hook_succeeded"
     HOOK_FAILED = "hook_failed"

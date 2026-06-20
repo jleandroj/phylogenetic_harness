@@ -25,6 +25,7 @@ from . import (  # noqa: F401,E402
     events,
     executor,
     hardware,
+    hooks,
     ids,
     leases,
     logging_json,

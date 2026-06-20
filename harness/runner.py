@@ -51,6 +51,7 @@ class TaskRunner:
         seeds: SeedManager | None = None,
         worker_id: str = "worker-0",
         clock_fn=None,
+        hooks=None,
     ) -> None:
         self.events = events
         self.tools = tools
@@ -63,6 +64,11 @@ class TaskRunner:
         self.seeds = seeds
         self.worker_id = worker_id
         self._clock = clock_fn or (lambda: 0)
+        # Lifecycle hooks (audit round 4 #1). Default: an empty, no-op registry.
+        if hooks is None:
+            from .hooks import HookRegistry
+            hooks = HookRegistry(events=events)
+        self.hooks = hooks
 
     def _now(self) -> Any:
         return self._clock()
@@ -182,6 +188,7 @@ class TaskRunner:
 
         task.set_technical(TechnicalState.APPROVED)
         self.events.emit(EventType.TASK_APPROVED, task_id=task.task_id)
+        self.hooks.fire_pre(task)  # pre-task hooks (error-isolated)
         argv = self._build_argv(task, contract, bindings)
 
         result: ExecutionResult | None = None
@@ -233,6 +240,7 @@ class TaskRunner:
                     EventType.RESULT_INTERPRETATION_LIMITED, task_id=task.task_id,
                     reason="execution raised; not biologically interpretable",
                 )
+                self.hooks.fire_error(task, exc)  # on-error hooks (error-isolated)
                 break
             finally:
                 self.leases.release(task.task_id)
@@ -287,4 +295,5 @@ class TaskRunner:
             "interpretation": interp.to_dict(),
         }
         self._persist_bundle(task.task_id, bundle)
+        self.hooks.fire_post(task, bundle)  # post-task hooks (error-isolated)
         return bundle
