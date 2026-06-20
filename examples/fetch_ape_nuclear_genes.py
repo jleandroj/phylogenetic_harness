@@ -25,7 +25,12 @@ ESEARCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 EFETCH = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
 
 TAXA = ["Homo sapiens", "Pan troglodytes", "Pan paniscus", "Gorilla gorilla", "Pongo abelii"]
-GENES = ["RAG1", "RAG2", "BDNF", "ADORA3", "RHO", "CNR1"]
+# Single-copy nuclear markers used in primate/mammal phylogenetics. Genes that do
+# not return a clean ortholog across >=4 taxa are skipped at assembly time.
+GENES = [
+    "RAG1", "RAG2", "BDNF", "RHO", "CNR1", "GHR", "RBP3", "TTR", "APOB", "ALB",
+    "FGB", "VWF", "POMC", "ZFX", "EDN1", "CREM", "ADORA3", "PNOC", "IRBP", "ATP7A",
+]
 OUT = Path("data/apes_nuclear")
 
 
