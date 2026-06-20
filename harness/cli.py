@@ -215,8 +215,15 @@ def _cmd_pipeline(args: argparse.Namespace) -> int:
             return 2
         name, path = spec.split("=", 1)
         genes[name] = path
-    cfg = RunConfig(run_id=args.run_id or new_run_id(), mode="full", executor="local")
+    # Sandbox tool execution by default when a backend exists (audit round 4 #3).
+    import shutil
+    backend_present = bool(shutil.which("bwrap") or shutil.which("apptainer"))
+    sandbox = backend_present and not args.no_sandbox
+    cfg = RunConfig(run_id=args.run_id or new_run_id(), mode="full", executor="local",
+                    sandbox=sandbox)
     run = Run(cfg)
+    if not backend_present and not args.no_sandbox:
+        sys.stderr.write("note: no sandbox backend (bwrap/apptainer) found; running unsandboxed\n")
     run.capture_environment()
     run.load_tools(manifest.DEFAULT_TOOLS_DIR)
     run.write_tools_lock()
@@ -309,6 +316,7 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--nboot", type=int, default=1000)
     pp.add_argument("--no-model-selection", action="store_true")
     pp.add_argument("--no-species-tree", action="store_true")
+    pp.add_argument("--no-sandbox", action="store_true", help="disable the default execution sandbox")
     pp.add_argument("--loci-independent", choices=["yes", "no", "unknown"], default="unknown",
                     help="assert whether the loci are independent (ASTRAL is invalid on linked loci)")
     pp.add_argument("--run-id", dest="run_id", default=None)

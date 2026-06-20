@@ -43,6 +43,8 @@ class RunConfig:
     recovery_policy: str = "requeue_expired_leases"
     logging: str = "json"
     output_dir: str = ""
+    sandbox: bool = False           # wrap tool execution in a sandbox (bwrap/apptainer)
+    sandbox_backend: str = "auto"
 
     def __post_init__(self) -> None:
         if self.mode not in VALID_MODES:
@@ -90,11 +92,19 @@ class Run:
             allow_overwrite=config.allow_overwrite,
             persist_path=self.dir / "approvals.json",
         )
+        # Sandbox writable binds: the run dir (tool outputs) + the working dir
+        # (inputs may be relative to cwd). Everything else is read-only / no network.
+        sandbox_cfg = {
+            "enabled": config.sandbox,
+            "backend": config.sandbox_backend,
+            "binds": [str(self.dir.resolve()), str(Path.cwd())],
+        }
         self.executor = get_executor(
             config.executor if config.mode != "dry_run" else "dry_run",
             self.dir / "logs",
             clock_fn=clock_fn,
             disk_path=self.dir,
+            sandbox=sandbox_cfg if config.executor == "local" else None,
         )
         self.leases = LeaseManager(events=self.events)
         self.report = ReportGenerator(self.dir)

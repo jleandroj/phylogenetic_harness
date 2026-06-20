@@ -11,7 +11,9 @@ from __future__ import annotations
 import shutil
 from typing import Any
 
-BACKENDS = ("apptainer", "bwrap")
+# Order matters for "auto": prefer bwrap (rootless, needs no image) over apptainer
+# (which requires a container image).
+BACKENDS = ("bwrap", "apptainer")
 
 
 def available_backend(preferred: str = "auto") -> str | None:
@@ -53,4 +55,7 @@ def wrap(argv: list[str], *, enabled: bool = False, backend: str = "auto",
     chosen = available_backend(backend)
     if chosen is None:
         return argv, "no_backend"
+    # apptainer needs an image; if none was given, fall back to bwrap when present.
+    if chosen == "apptainer" and not image and shutil.which("bwrap"):
+        chosen = "bwrap"
     return build_wrapped(chosen, argv, image=image, **kw), chosen

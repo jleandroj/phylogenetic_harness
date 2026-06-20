@@ -162,6 +162,7 @@ class LocalExecutor:
         output_cap_bytes: int = DEFAULT_OUTPUT_CAP_BYTES,
         min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
         redactor: Callable[[str], str] = _default_redact,
+        sandbox: dict[str, Any] | None = None,
     ) -> None:
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -170,6 +171,11 @@ class LocalExecutor:
         self.output_cap_bytes = output_cap_bytes
         self.min_free_bytes = min_free_bytes
         self.redactor = redactor
+        # Optional sandbox: {"enabled": bool, "backend": "auto"|"bwrap"|"apptainer",
+        # "binds": [writable dirs], "image": <apptainer image>}. When enabled the
+        # argv is wrapped (no network, fresh /tmp, read-only root) before execution.
+        self.sandbox = sandbox or {"enabled": False}
+        self._sandbox_mode = "disabled"
 
     def _log_paths(self, task_id: str, attempt: int) -> tuple[Path, Path]:
         stem = f"{task_id}.attempt{attempt}"
@@ -188,6 +194,16 @@ class LocalExecutor:
         stdout_to: str | os.PathLike[str] | None = None,
     ) -> ExecutionResult:
         argv = _require_argv(command)
+        # Optionally wrap the command in a sandbox (audit round 4 #3 -> default in
+        # the pipeline). The output dir must be a writable bind so the tool can
+        # write its results; everything else is read-only / no network / fresh /tmp.
+        if self.sandbox.get("enabled"):
+            from .sandbox import wrap
+            argv, self._sandbox_mode = wrap(
+                argv, enabled=True, backend=self.sandbox.get("backend", "auto"),
+                image=self.sandbox.get("image"), binds=self.sandbox.get("binds"),
+                allow_net=self.sandbox.get("allow_net", False),
+            )
         stderr_log = self._log_paths(task_id, attempt)[1]
         # When a tool writes its result to stdout (mafft, fasttree, ...), capture it
         # FAITHFULLY to the declared output file — no shell redirection, no cap, no

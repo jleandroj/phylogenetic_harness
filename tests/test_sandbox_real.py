@@ -50,3 +50,25 @@ def test_writable_bind_allows_output(run_dir, tmp_path):
     res = _exec(run_dir).run("t4", argv)
     assert res.exit_code == 0
     assert out.read_text() == "done"            # writable bind let the output through
+
+
+def test_executor_sandbox_config_runs_and_binds(run_dir, tmp_path):
+    """LocalExecutor with sandbox enabled wraps the command, writes to a bound
+    dir, and records the backend mode."""
+    work = tmp_path / "work"
+    work.mkdir()
+    out = work / "out.txt"
+    ex = LocalExecutor(run_dir, clock_fn=counting_clock(), disk_path=run_dir,
+                       sandbox={"enabled": True, "backend": "bwrap", "binds": [str(work)]})
+    res = ex.run("t", [sys.executable, "-c", f"open({str(out)!r},'w').write('sandboxed')"])
+    assert res.exit_code == 0
+    assert out.read_text() == "sandboxed"     # writable bind worked
+    assert ex._sandbox_mode == "bwrap"         # the wrap actually applied
+
+
+def test_executor_sandbox_blocks_network(run_dir):
+    ex = LocalExecutor(run_dir, clock_fn=counting_clock(), disk_path=run_dir,
+                       sandbox={"enabled": True, "backend": "bwrap", "binds": []})
+    code = "import socket; socket.create_connection(('8.8.8.8', 53), 2)"
+    res = ex.run("t2", [sys.executable, "-c", code])
+    assert res.exit_code != 0                  # no network inside the sandbox
