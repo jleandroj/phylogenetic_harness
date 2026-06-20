@@ -220,10 +220,11 @@ def _cmd_pipeline(args: argparse.Namespace) -> int:
     run.capture_environment()
     run.load_tools(manifest.DEFAULT_TOOLS_DIR)
     run.write_tools_lock()
+    loci_independent = {"yes": True, "no": False, "unknown": None}[args.loci_independent]
     out = run_phylogenomic_pipeline(
         run.build_runner(), run_id=cfg.run_id, genes=genes, workdir=run.dir / "work",
         nboot=args.nboot, model_selection=not args.no_model_selection,
-        species_tree=not args.no_species_tree,
+        species_tree=not args.no_species_tree, loci_independent=loci_independent,
     )
     # Freeze provenance (Q1) so the run is reproducible/auditable.
     tools_lock = json.loads((run.dir / "TOOLS.lock.json").read_text())
@@ -245,9 +246,13 @@ def _cmd_pipeline(args: argparse.Namespace) -> int:
                       "tree": (g.get("tree") or {}).get("status_technical"),
                       "scientific": (g.get("tree") or {}).get("status_scientific")}
                   for n, g in out["genes"].items()},
-        "discordant": out["discordant"],
+        "loci_independent": out.get("loci_independent"),
+        "discordant_supported": out["discordant"],          # well-supported conflict only
+        "discordant_raw_rf": out.get("raw_discordant_rf"),  # raw RF (includes noise)
+        "min_support_threshold": out.get("min_support_threshold"),
         "comparisons": out["comparisons"],
         "species_tree": ({"status": sp.get("species", {}).get("status_technical") if sp.get("species") else None,
+                          "scientific": (sp.get("species") or {}).get("status_scientific") if sp.get("species") else None,
                           "path": sp.get("species_path"), "skipped": sp.get("skipped"),
                           "vs_genes": sp.get("vs_genes")}),
     }, indent=2) + "\n")
@@ -304,6 +309,8 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--nboot", type=int, default=1000)
     pp.add_argument("--no-model-selection", action="store_true")
     pp.add_argument("--no-species-tree", action="store_true")
+    pp.add_argument("--loci-independent", choices=["yes", "no", "unknown"], default="unknown",
+                    help="assert whether the loci are independent (ASTRAL is invalid on linked loci)")
     pp.add_argument("--run-id", dest="run_id", default=None)
     pp.set_defaults(func=_cmd_pipeline)
 

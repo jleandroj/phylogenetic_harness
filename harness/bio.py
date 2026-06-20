@@ -410,11 +410,33 @@ ASTRAL_NOT_ALLOWED = [
 ]
 
 
+def _all_congruent(gene_tree_paths: list[str]) -> bool:
+    """True iff every pair of gene trees is topologically identical (RF=0) — the
+    signature of linked (non-independent) loci."""
+    paths = list(gene_tree_paths)
+    for i in range(len(paths)):
+        for j in range(i + 1, len(paths)):
+            try:
+                if compare_gene_trees(paths[i], paths[j])["rf_distance"] != 0:
+                    return False
+            except Exception:  # noqa: BLE001
+                return False
+    return len(paths) >= 2
+
+
 def run_astral_species_tree(
     runner: TaskRunner, *, run_id: str, gene_tree_paths: list[str], workdir: str | Path,
+    loci_independent: bool | None = None,
 ) -> dict[str, Any]:
     """Build a coalescent species tree from per-gene trees with ASTRAL, then
-    report how each gene tree agrees/disagrees with it (RF)."""
+    report how each gene tree agrees/disagrees with it (RF).
+
+    Gated on locus independence (audit round 4): ASTRAL on linked loci (e.g.
+    several mitochondrial genes) is NOT a valid coalescent estimate, and the
+    species tree will not be called biologically interpretable in that case.
+    """
+    from .phylo_guards import assess_locus_independence
+
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     genetrees = workdir / "genetrees.nwk"
@@ -426,6 +448,14 @@ def run_astral_species_tree(
     genetrees.write_text("\n".join(lines) + "\n", encoding="utf-8")
     species = workdir / "species.nwk"
 
+    congruent = _all_congruent(gene_tree_paths)
+    indep_check = assess_locus_independence(
+        loci_independent, all_gene_trees_congruent=congruent, n_loci=len(lines))
+    extra = list(ASTRAL_NOT_ALLOWED)
+    if not indep_check.passed:
+        extra.append("Locus independence is NOT established (see loci_independent check); "
+                     "this ASTRAL tree is NOT a valid multispecies-coalescent estimate.")
+
     task = species_tree_astral_spec().build_task(
         task_id=f"{run_id}.astral", run_id=run_id,
         params={"input": str(genetrees), "output": str(species)},
@@ -434,13 +464,15 @@ def run_astral_species_tree(
     )
 
     def hook(_t: Task, _o: list[str]) -> list[CheckResult]:
-        return astral_support_evidence(species, n_loci=len(lines))
+        # The independence gate is REAL evidence: a FAILED check sinks the species
+        # tree out of BIOLOGICALLY_INTERPRETABLE (the science layer's gate).
+        return astral_support_evidence(species, n_loci=len(lines)) + [indep_check]
 
     bundle = taskstore.run_or_resume(runner,
         task, statistical_evidence_hook=hook,
         allowed=["ASTRAL estimated a species tree from the gene trees under the multispecies coalescent."],
-        limitations=[f"Estimated from {len(lines)} gene trees."],
-        extra_not_allowed=ASTRAL_NOT_ALLOWED,
+        limitations=[f"Estimated from {len(lines)} gene trees; locus independence: {indep_check.status}."],
+        extra_not_allowed=extra,
     )
 
     vs_genes = []
@@ -509,6 +541,7 @@ def run_comparative_slice(
 def run_phylogenomic_pipeline(
     runner: TaskRunner, *, run_id: str, genes: dict[str, str], workdir: str | Path,
     nboot: int = 1000, model_selection: bool = True, species_tree: bool = True,
+    loci_independent: bool | None = None,
 ) -> dict[str, Any]:
     """End-to-end comparative pipeline: per gene, align (MAFFT) then build a tree
     with model selection (IQ-TREE ModelFinder, if available) else RAxML bootstrap;
@@ -551,7 +584,11 @@ def run_phylogenomic_pipeline(
         if res["tree"]["status_technical"] == "SUCCEEDED":
             gene_tree_paths.append(res["tree_path"])
 
-    # Gene-tree discordance (RF) across all built trees.
+    # Gene-tree discordance across all built trees. Report BOTH raw RF and, more
+    # importantly, SUPPORTED conflict (incompatible clades well-supported in both
+    # trees) so estimation noise is not mistaken for ILS (audit round 4).
+    from .phylo_guards import supported_conflict
+    min_support = 95.0 if use_model else 70.0  # UFBoot >=95 / bootstrap >=70
     built = {n: g["tree_path"] for n, g in per_gene.items()
              if g.get("tree") and g["tree"]["status_technical"] == "SUCCEEDED"}
     comparisons = []
@@ -560,14 +597,21 @@ def run_phylogenomic_pipeline(
         for j in range(i + 1, len(names)):
             cmp = compare_gene_trees(built[names[i]], built[names[j]])
             cmp["pair"] = [names[i], names[j]]
+            sc = supported_conflict(built[names[i]], built[names[j]], min_support=min_support)
+            cmp["supported_conflict"] = sc["has_supported_conflict"]
+            cmp["n_supported_conflicts"] = sc["n_supported_conflicts"]
             comparisons.append(cmp)
-    discordant = any(not c["congruent"] for c in comparisons)
+    raw_discordant = any(not c["congruent"] for c in comparisons)
+    # Only well-supported conflict counts as real discordance (vs estimation error).
+    discordant = any(c["supported_conflict"] for c in comparisons)
 
     # Coalescent species tree (ASTRAL) — only if we have >=2 gene trees and the tool.
+    # Gated on locus independence (linked loci -> not a valid coalescent estimate).
     species = None
     if species_tree and have_astral and len(gene_tree_paths) >= 2:
-        species = run_astral_species_tree(runner, run_id=run_id,
-                                          gene_tree_paths=gene_tree_paths, workdir=workdir / "astral")
+        species = run_astral_species_tree(
+            runner, run_id=run_id, gene_tree_paths=gene_tree_paths,
+            workdir=workdir / "astral", loci_independent=loci_independent)
     elif species_tree and not have_astral:
         species = {"species": None, "skipped": "astral not available (registered but unavailable)"}
 
@@ -575,6 +619,9 @@ def run_phylogenomic_pipeline(
         "model_selection": use_model,
         "genes": per_gene,
         "comparisons": comparisons,
-        "discordant": discordant,
+        "raw_discordant_rf": raw_discordant,
+        "discordant": discordant,                 # supported conflict only
+        "min_support_threshold": min_support,
+        "loci_independent": loci_independent,
         "species_tree": species,
     }
