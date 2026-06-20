@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import shutil
 import subprocess
 import threading
 from collections.abc import Callable
@@ -332,12 +333,144 @@ class AuditOnlyExecutor(_NonExecutingExecutor):
 
 
 class SLURMExecutor:
-    """Declared interface for HPC submission (spec §6.3). Not implemented in v1."""
+    """Submit a task to SLURM (spec §6.3): write an sbatch script, submit with
+    ``sbatch --parsable``, poll ``sacct`` until terminal, map the state to an exit
+    code. ``dry_run=True`` writes the script and returns without submitting (so the
+    submission path is testable without a cluster). Output is captured to the same
+    per-attempt log files via SLURM's --output/--error.
+    """
 
     name = "slurm"
 
-    def run(self, *_: Any, **__: Any) -> ExecutionResult:
-        raise NotImplementedError("SLURMExecutor is a v1 stub; not implemented yet")
+    def __init__(
+        self,
+        log_dir: str | os.PathLike[str],
+        *,
+        clock_fn=clock.iso_now,
+        partition: str | None = None,
+        account: str | None = None,
+        poll_seconds: float = 10.0,
+        dry_run: bool = False,
+        **_: Any,
+    ) -> None:
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self._clock = clock_fn
+        self.partition = partition
+        self.account = account
+        self.poll_seconds = poll_seconds
+        self.dry_run = dry_run
+
+    def build_sbatch_script(self, task_id: str, argv: list[str], *, attempt: int,
+                            stdout_path: Path, stderr_path: Path,
+                            cpus: int = 1, memory_gb: float = 4.0,
+                            walltime_minutes: int = 30, gpu: bool = False) -> str:
+        import shlex
+        lines = [
+            "#!/bin/bash",
+            f"#SBATCH --job-name={task_id}",
+            f"#SBATCH --output={stdout_path}",
+            f"#SBATCH --error={stderr_path}",
+            f"#SBATCH --cpus-per-task={cpus}",
+            f"#SBATCH --mem={int(max(1, memory_gb) * 1024)}M",
+            f"#SBATCH --time={walltime_minutes}",
+        ]
+        if self.partition:
+            lines.append(f"#SBATCH --partition={self.partition}")
+        if self.account:
+            lines.append(f"#SBATCH --account={self.account}")
+        if gpu:
+            lines.append("#SBATCH --gres=gpu:1")
+        lines.append("set -euo pipefail")
+        # argv is quoted element-by-element -> no shell injection.
+        lines.append(" ".join(shlex.quote(a) for a in argv))
+        return "\n".join(lines) + "\n"
+
+    def run(
+        self,
+        task_id: str,
+        command: list[str],
+        *,
+        timeout_seconds: int | None = None,
+        attempt: int = 1,
+        resources: Any = None,
+        **_: Any,
+    ) -> ExecutionResult:
+        argv = _require_argv(command)
+        stem = f"{task_id}.attempt{attempt}"
+        stdout_path = self.log_dir / f"{stem}.stdout.log"
+        stderr_path = self.log_dir / f"{stem}.stderr.log"
+        script_path = self.log_dir / f"{stem}.sbatch"
+        cpus = getattr(resources, "cpus", 1)
+        mem = getattr(resources, "memory_gb", 4.0)
+        wall = getattr(resources, "walltime_minutes", max(1, (timeout_seconds or 1800) // 60))
+        gpu = getattr(resources, "gpu", False)
+        script = self.build_sbatch_script(
+            task_id, argv, attempt=attempt, stdout_path=stdout_path, stderr_path=stderr_path,
+            cpus=cpus, memory_gb=mem, walltime_minutes=wall, gpu=gpu)
+        script_path.write_text(script, encoding="utf-8")
+        ts = self._clock()
+
+        if self.dry_run:
+            return ExecutionResult(
+                task_id=task_id, command=argv, exit_code=None, started_at=ts, finished_at=ts,
+                wall_seconds=0.0, stdout_path=str(stdout_path), stderr_path=str(stderr_path),
+                attempt=attempt, error=f"slurm dry_run: script written to {script_path}")
+
+        if shutil.which("sbatch") is None:
+            return ExecutionResult(
+                task_id=task_id, command=argv, exit_code=None, started_at=ts, finished_at=ts,
+                wall_seconds=0.0, stdout_path=str(stdout_path), stderr_path=str(stderr_path),
+                attempt=attempt, error="slurm: sbatch not found on this host")
+
+        try:
+            sub = subprocess.run(["sbatch", "--parsable", str(script_path)],
+                                 capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return ExecutionResult(
+                task_id=task_id, command=argv, exit_code=None, started_at=ts,
+                finished_at=self._clock(), wall_seconds=0.0, stdout_path=str(stdout_path),
+                stderr_path=str(stderr_path), attempt=attempt, error=f"sbatch failed: {exc}")
+        if sub.returncode != 0:
+            return ExecutionResult(
+                task_id=task_id, command=argv, exit_code=sub.returncode, started_at=ts,
+                finished_at=self._clock(), wall_seconds=0.0, stdout_path=str(stdout_path),
+                stderr_path=str(stderr_path), attempt=attempt,
+                error=f"sbatch exit {sub.returncode}: {sub.stderr.strip()}")
+        job_id = sub.stdout.strip().split(";")[0]
+        exit_code, timed_out = self._poll(job_id, timeout_seconds)
+        return ExecutionResult(
+            task_id=task_id, command=argv, exit_code=exit_code, started_at=ts,
+            finished_at=self._clock(), wall_seconds=None, stdout_path=str(stdout_path),
+            stderr_path=str(stderr_path), timed_out=timed_out, attempt=attempt,
+            error=None if exit_code == 0 else f"slurm job {job_id} exit {exit_code}")
+
+    def _poll(self, job_id: str, timeout_seconds: int | None) -> tuple[int | None, bool]:
+        import time
+        terminal = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL"}
+        t0 = clock.monotonic()
+        while True:
+            try:
+                q = subprocess.run(
+                    ["sacct", "-j", job_id, "--format=State,ExitCode", "--parsable2", "--noheader"],
+                    capture_output=True, text=True, timeout=60)
+                rows = [r for r in q.stdout.splitlines() if r.strip()]
+                state = rows[0].split("|")[0].strip().split()[0] if rows else ""
+            except (OSError, subprocess.SubprocessError):
+                state = ""
+            if state in terminal:
+                code = 0 if state == "COMPLETED" else 1
+                if rows:
+                    ec = rows[0].split("|")[1] if "|" in rows[0] else "1:0"
+                    try:
+                        code = int(ec.split(":")[0])
+                    except (ValueError, IndexError):
+                        pass
+                return code, state == "TIMEOUT"
+            if timeout_seconds and (clock.monotonic() - t0) > timeout_seconds:
+                subprocess.run(["scancel", job_id], capture_output=True)
+                return None, True
+            time.sleep(self.poll_seconds)
 
 
 class GPUExecutor:
@@ -360,8 +493,12 @@ def get_executor(mode: str, log_dir: str | os.PathLike[str], **kw: Any):
     if mode not in table:
         raise ValueError(f"unknown executor mode {mode!r}; choices: {sorted(table)}")
     cls = table[mode]
-    if cls in (SLURMExecutor, GPUExecutor):
+    if cls is GPUExecutor:
         return cls()
+    if cls is SLURMExecutor:
+        return cls(log_dir, clock_fn=kw.get("clock_fn", clock.iso_now),
+                   partition=kw.get("partition"), account=kw.get("account"),
+                   dry_run=kw.get("dry_run", False))
     if cls in (DryRunExecutor, AuditOnlyExecutor):
         return cls(log_dir, clock_fn=kw.get("clock_fn", clock.iso_now))
     return cls(log_dir, **kw)
