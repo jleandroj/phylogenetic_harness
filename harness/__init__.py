@@ -9,11 +9,9 @@ from __future__ import annotations
 
 __version__ = "0.1.0"
 
-# Make extra tool dirs (e.g. a dedicated conda env via HARNESS_TOOL_PATHS) visible
-# to detection/execution before any tool registry is built.
-from .toolpaths import ensure_tool_paths as _ensure_tool_paths  # noqa: E402
-
-_ensure_tool_paths()
+# NOTE: importing the package no longer mutates PATH (audit round 4). Call
+# harness.toolpaths.ensure_tool_paths() explicitly (the CLI does) to make
+# HARNESS_TOOL_PATHS dirs visible to tool detection/execution.
 
 from . import (  # noqa: F401,E402
     aggregate,

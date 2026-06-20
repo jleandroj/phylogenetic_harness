@@ -342,6 +342,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Make HARNESS_TOOL_PATHS dirs visible (explicit, not on import — audit round 4).
+    from .toolpaths import ensure_tool_paths
+    ensure_tool_paths()
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

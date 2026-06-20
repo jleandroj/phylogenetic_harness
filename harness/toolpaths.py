@@ -12,29 +12,18 @@ Call ``ensure_tool_paths()`` early; it is idempotent.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 _APPLIED = False
 
 
 def candidate_dirs() -> list[str]:
+    """Only EXPLICIT directories from ``HARNESS_TOOL_PATHS`` (audit round 4: no
+    silent HOME/conda auto-prepend — that shadowed system tools and was a
+    supply-chain risk)."""
     dirs: list[str] = []
     for d in os.environ.get("HARNESS_TOOL_PATHS", "").split(os.pathsep):
         if d.strip():
             dirs.append(d.strip())
-    # Conventional isolated env created for extra phylo tools.
-    conda_root = os.environ.get("CONDA_PREFIX_1") or os.environ.get("CONDA_PREFIX")
-    if conda_root:
-        # CONDA_PREFIX may already be base; the envs live alongside.
-        base = Path(conda_root)
-        for root in {base, base.parent.parent if base.name == "envs" else base}:
-            cand = root / "envs" / "phylo_extra" / "bin"
-            if cand.is_dir():
-                dirs.append(str(cand))
-    # Also the common default install location.
-    home_env = Path.home() / "miniconda3" / "envs" / "phylo_extra" / "bin"
-    if home_env.is_dir():
-        dirs.append(str(home_env))
     # Dedupe, keep order.
     seen: set[str] = set()
     return [d for d in dirs if not (d in seen or seen.add(d))]

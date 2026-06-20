@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -8,6 +9,16 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 TOOLS_DIR = REPO / "tools"
+
+# Explicitly expose the dedicated phylo_extra env (iqtree/astral) via the public
+# mechanism — import no longer mutates PATH (audit round 4).
+_EXTRA = Path.home() / "miniconda3" / "envs" / "phylo_extra" / "bin"
+if _EXTRA.is_dir():
+    existing = os.environ.get("HARNESS_TOOL_PATHS", "")
+    os.environ["HARNESS_TOOL_PATHS"] = f"{_EXTRA}{os.pathsep}{existing}" if existing else str(_EXTRA)
+from harness.toolpaths import ensure_tool_paths  # noqa: E402
+
+ensure_tool_paths()
 
 from harness import clock  # noqa: E402
 from harness.approval import ApprovalGate  # noqa: E402
