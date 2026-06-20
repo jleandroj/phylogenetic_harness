@@ -16,6 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from . import taskstore
 from .runner import TaskRunner
 from .task_types import TaskTypeSpec
 from .tasks import FailurePolicy, ResourceRequest, Task
@@ -219,7 +220,7 @@ def run_phylo_slice(
         inputs=[str(fasta_path)], outputs_expected=[str(aligned)],
         resources=ResourceRequest(cpus=2, memory_gb=2),
     )
-    msa_bundle = runner.run_task(
+    msa_bundle = taskstore.run_or_resume(runner,
         msa,
         allowed=["MAFFT produced a multiple sequence alignment (equal-length columns)."],
         limitations=["Alignment quality bounds every downstream phylogenetic claim."],
@@ -236,7 +237,7 @@ def run_phylo_slice(
         inputs=[str(aligned)], outputs_expected=[str(tree)],
         resources=ResourceRequest(cpus=2, memory_gb=2),
     )
-    tree_bundle = runner.run_task(
+    tree_bundle = taskstore.run_or_resume(runner,
         tree_task,
         statistical_evidence_hook=hook,
         allowed=["FastTree inferred an approximate-ML gene tree from the alignment."],
@@ -267,7 +268,7 @@ def run_raxml_tree(
     def hook(_t: Task, _o: list[str]) -> list[CheckResult]:
         return alignment_evidence(aligned) + raxml_bootstrap_evidence(bip)
 
-    bundle = runner.run_task(
+    bundle = taskstore.run_or_resume(runner,
         task, statistical_evidence_hook=hook,
         allowed=["RAxML inferred an ML gene tree with classical bootstrap support."],
         limitations=["Bootstrap is conditional on the model (GTRGAMMA) and the alignment."],
@@ -355,7 +356,7 @@ def select_model_and_tree(
                               {"model": model}))
         return ev
 
-    bundle = runner.run_task(
+    bundle = taskstore.run_or_resume(runner,
         task, statistical_evidence_hook=hook,
         allowed=["IQ-TREE selected a substitution model (ModelFinder) and built an ML tree "
                  "with ultrafast bootstrap UNDER that model."],
@@ -435,7 +436,7 @@ def run_astral_species_tree(
     def hook(_t: Task, _o: list[str]) -> list[CheckResult]:
         return astral_support_evidence(species, n_loci=len(lines))
 
-    bundle = runner.run_task(
+    bundle = taskstore.run_or_resume(runner,
         task, statistical_evidence_hook=hook,
         allowed=["ASTRAL estimated a species tree from the gene trees under the multispecies coalescent."],
         limitations=[f"Estimated from {len(lines)} gene trees."],
@@ -472,7 +473,7 @@ def run_comparative_slice(
             resources=ResourceRequest(cpus=2, memory_gb=2),
         )
         gdir.mkdir(parents=True, exist_ok=True)
-        msa_bundle = runner.run_task(msa, limitations=["Alignment quality bounds the gene tree."])
+        msa_bundle = taskstore.run_or_resume(runner, msa, limitations=["Alignment quality bounds the gene tree."])
         if msa_bundle["status_technical"] != "SUCCEEDED":
             per_gene[name] = {"msa": msa_bundle, "tree": None, "tree_path": None}
             continue
@@ -533,7 +534,7 @@ def run_phylogenomic_pipeline(
             inputs=[str(fasta)], outputs_expected=[str(aligned)],
             resources=ResourceRequest(cpus=2, memory_gb=2),
         )
-        msa_bundle = runner.run_task(msa, limitations=["Alignment quality bounds the gene tree."])
+        msa_bundle = taskstore.run_or_resume(runner, msa, limitations=["Alignment quality bounds the gene tree."])
         if msa_bundle["status_technical"] != "SUCCEEDED":
             per_gene[name] = {"msa": msa_bundle, "tree": None, "tree_path": None, "method": None}
             continue
