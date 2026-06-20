@@ -170,8 +170,8 @@ def generate_pipeline_report(run_dir: str | Path) -> dict[str, str]:
     weak_support = []
     for tid, b in gene_trees:
         for cname in ("iqtree_mean_ufboot", "raxml_mean_bootstrap", "tree_mean_support"):
-            c = _find_check(b, cname)
-            if c and c["status"] == "NOT_APPLICABLE":
+            chk: dict[str, Any] | None = _find_check(b, cname)
+            if chk and chk["status"] == "NOT_APPLICABLE":
                 weak_support.append(tid.split(".")[-1])
     if weak_support:
         risks.append(f"Per-gene branch support below the conventional threshold on: "

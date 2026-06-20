@@ -20,7 +20,8 @@ GAP = set("-.")
 
 def _read_fasta(path: Path) -> list[tuple[str, str]]:
     recs: list[tuple[str, str]] = []
-    name, seq = None, []
+    name: str | None = None
+    seq: list[str] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.startswith(">"):
             if name is not None:

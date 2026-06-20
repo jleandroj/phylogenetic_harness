@@ -34,7 +34,7 @@ def _row(bundle: dict[str, Any], run_cfg: dict[str, Any], tools_lock: dict[str, 
     # Trustworthy ONLY if it succeeded technically, every validator passed, and it
     # is not degenerate. This is the single boolean a consumer should filter on.
     trustworthy = (tech == "SUCCEEDED") and validators_passed and not degenerate
-    tool_id = bundle.get("tool_id")
+    tool_id = bundle.get("tool_id") or ""
     outputs = bundle.get("outputs") or []
     out_sha = ";".join(o.get("sha256") or "none" for o in outputs) if outputs else "none"
     return {

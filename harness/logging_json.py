@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -25,7 +26,7 @@ class JsonLogger:
         *,
         mirror_stderr: bool = False,
         context: dict[str, Any] | None = None,
-        clock: callable | None = None,
+        clock: Callable[[], str] | None = None,
     ) -> None:
         self._lock = threading.Lock()
         self._fh: TextIO | None = None

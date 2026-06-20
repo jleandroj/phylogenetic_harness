@@ -272,7 +272,7 @@ class TaskRunner:
         # Checksum the produced outputs so downstream aggregation/diff is provenance-
         # complete (Q4/Q5) and a result can be compared byte-for-byte across runs.
         from . import ids
-        outputs = []
+        outputs: list[dict[str, Any]] = []
         for out in task.outputs_expected:
             p = Path(out)
             if p.exists() and p.is_file():

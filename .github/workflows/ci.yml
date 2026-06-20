@@ -21,6 +21,6 @@ jobs:
       - name: Lint
         run: ruff check .
       - name: Typecheck
-        run: mypy harness || true   # gradual: non-blocking until annotations tighten
+        run: mypy harness
       - name: Tests
         run: pytest -q

@@ -134,7 +134,11 @@ def detect_degenerate(
         reasons.append("placeholder value detected")
     # dedupe preserving order
     seen: set[str] = set()
-    deduped = [r for r in reasons if not (r in seen or seen.add(r))]
+    deduped: list[str] = []
+    for r in reasons:
+        if r not in seen:
+            seen.add(r)
+            deduped.append(r)
     return DegeneracyReport(degenerate=bool(deduped), reasons=deduped)
 
 

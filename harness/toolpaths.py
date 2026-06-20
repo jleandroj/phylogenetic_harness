@@ -26,7 +26,12 @@ def candidate_dirs() -> list[str]:
             dirs.append(d.strip())
     # Dedupe, keep order.
     seen: set[str] = set()
-    return [d for d in dirs if not (d in seen or seen.add(d))]
+    out: list[str] = []
+    for d in dirs:
+        if d not in seen:
+            seen.add(d)
+            out.append(d)
+    return out
 
 
 def ensure_tool_paths() -> list[str]:

@@ -194,7 +194,7 @@ class LocalExecutor:
         # redaction (it is a scientific output, not a log). stderr still goes to the
         # capped/redacted log. Otherwise stdout goes to the normal capped log.
         faithful_stdout = stdout_to is not None
-        stdout_path = Path(stdout_to) if faithful_stdout else self._log_paths(task_id, attempt)[0]
+        stdout_path = Path(stdout_to) if stdout_to is not None else self._log_paths(task_id, attempt)[0]
         stderr_path = stderr_log
 
         # Pre-flight disk check (audit P0.4): refuse to start if nearly full.
@@ -231,7 +231,7 @@ class LocalExecutor:
             if faithful_stdout:
                 stdout_path.parent.mkdir(parents=True, exist_ok=True)
                 out_fh = open(stdout_path, "wb")
-                stdout_target = out_fh
+                stdout_target: Any = out_fh
             else:
                 stdout_target = subprocess.PIPE
             proc = subprocess.Popen(

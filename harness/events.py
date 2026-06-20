@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -91,7 +91,7 @@ class EventStore:
         self,
         path: str | os.PathLike[str],
         *,
-        clock: callable | None = None,
+        clock: Callable[[], str] | None = None,
         worker: str | None = None,
         fsync_every: int = 1,
     ) -> None:
