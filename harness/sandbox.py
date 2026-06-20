@@ -31,10 +31,13 @@ def build_wrapped(backend: str, argv: list[str], *, image: str | None = None,
         net = [] if allow_net else ["--net", "--network", "none"]
         return ["apptainer", "exec", "--containall", *net, image, *argv]
     if backend == "bwrap":
-        cmd = ["bwrap", "--ro-bind", "/usr", "/usr", "--ro-bind", "/bin", "/bin",
-               "--ro-bind", "/lib", "/lib", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]
+        # Read-only root (robust under usrmerge so binaries are found), a fresh
+        # tmpfs over /tmp (hides the host /tmp), isolated /dev and /proc, and no
+        # network by default. Writable binds are added explicitly for outputs.
+        cmd = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
+               "--tmpfs", "/tmp"]
         for b in binds or []:
-            cmd += ["--bind", b, b]
+            cmd += ["--bind", b, b]  # writable (e.g. the output dir)
         if not allow_net:
             cmd += ["--unshare-net"]
         return [*cmd, *argv]
