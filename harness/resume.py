@@ -45,7 +45,11 @@ def resume_run(run_dir: str | Path, *, tools_dir: str | Path | None = None) -> d
     tasks = taskstore.load_tasks(run_dir)
     # Supervisor over Scheduler: a task that hard-crashed the process on a prior
     # attempt is quarantined here, so resume can never enter an infinite crash loop.
-    summary = Supervisor(run.build_runner(worker_id="resume"), run_dir).run(tasks, resume=True)
+    # graceful_shutdown traps SIGTERM/SIGINT so a stop mid-grid releases leases and
+    # records the interruption instead of leaving zombies.
+    from .signals import graceful_shutdown
+    with graceful_shutdown(run_dir):
+        summary = Supervisor(run.build_runner(worker_id="resume"), run_dir).run(tasks, resume=True)
     run.events.emit(EventType.RECOVERY_COMPLETED, resumed=summary["total"] - len(summary["skipped"]))
     run.finish()
 
