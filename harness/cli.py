@@ -269,6 +269,60 @@ def _cmd_pipeline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_discover(args: argparse.Namespace) -> int:
+    """Second harness: outgroup-polarized comparative coding-evolution discovery
+    over orthologous great-ape CDS, producing the master-prompt deliverables."""
+    import shutil
+
+    from . import manifest
+    from .aggregate import aggregate_run
+    from .discovery import run_discovery
+    from .discovery_report import generate_discovery_report
+    genes = {}
+    for spec in args.genes:
+        if "=" not in spec:
+            sys.stderr.write(f"gene spec must be name=path, got {spec!r}\n")
+            return 2
+        name, path = spec.split("=", 1)
+        genes[name] = path
+    backend_present = bool(shutil.which("bwrap") or shutil.which("apptainer"))
+    sandbox = backend_present and not args.no_sandbox
+    strict = not getattr(args, "no_strict", False) and sandbox
+    cfg = RunConfig(run_id=args.run_id or new_run_id(), mode="full", executor="local",
+                    sandbox=sandbox, strict=strict)
+    run = Run(cfg)
+    if not backend_present and not args.no_sandbox:
+        sys.stderr.write("note: no sandbox backend (bwrap/apptainer) found; running unsandboxed\n")
+    run.capture_environment()
+    run.load_tools(manifest.DEFAULT_TOOLS_DIR)
+    run.write_tools_lock()
+    out = run_discovery(run.build_runner(), run_id=cfg.run_id, genes=genes,
+                        workdir=run.dir / "work", mito=args.mito)
+    # Freeze provenance so the run is reproducible/auditable (same posture as pipeline).
+    tools_lock = json.loads((run.dir / "TOOLS.lock.json").read_text())
+    manifest.write_manifest(
+        run.dir, run_config={**cfg.to_dict(), "config_hash": cfg.config_hash},
+        tools_lock=tools_lock, seed_record=run.seeds.record(),
+        input_paths=[p for p in genes.values() if Path(p).exists()])
+    aggregate_run(run.dir)
+    report_paths = generate_discovery_report(run.dir, genes, out, run_id=cfg.run_id,
+                                             literature=args.literature)
+    run.finish()
+    best = out.get("best")
+    sys.stdout.write(json.dumps({
+        "run_dir": str(run.dir),
+        "report": report_paths.get("report"),
+        "genetic_code_table": out["table"],
+        "genes_scanned": sum(1 for g in out["genes"].values() if g.get("scan")),
+        "n_candidates": out["n_candidates"],
+        "n_polarized": sum(1 for c in out["candidates"] if c["polarized"]),
+        "best": {"gene": best["gene"], "event": best["event_type"], "pattern": best["pattern"],
+                 "change": f"{best['ancestral']}>{best['derived_state']}",
+                 "overall_priority": best["overall_priority"]} if best else None,
+    }, indent=2) + "\n")
+    return 0
+
+
 def _cmd_kill(args: argparse.Namespace) -> int:
     """Kill-switch: stop a run (or --panic to stop ALL runs)."""
     from . import audit, killswitch
@@ -284,6 +338,17 @@ def _cmd_kill(args: argparse.Namespace) -> int:
         sys.stderr.write("usage: harness kill <run_dir> | harness kill --panic\n")
         return 2
     return 0
+
+
+def _cmd_verify(args: argparse.Namespace) -> int:
+    """Run the multi-agent verification panel over a finished run."""
+    from .agents import verify_run
+    protected = tuple(args.protect or ())
+    decision = verify_run(args.run_dir, claims_path=args.claims, protected_roots=protected)
+    sys.stdout.write(json.dumps(decision, indent=2) + "\n")
+    sys.stderr.write(f"FINAL: {decision['status']} — {decision['rationale']}\n")
+    # exit non-zero on any non-clean verdict so CI/automation can gate on it.
+    return 0 if decision["status"] in ("PASS", "PASS_EXPLORATORY") else 1
 
 
 def _cmd_sandbox_check(args: argparse.Namespace) -> int:
@@ -435,8 +500,27 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--run-id", dest="run_id", default=None)
     pp.set_defaults(func=_cmd_pipeline)
 
+    pdv = sub.add_parser("discover", help="polarized comparative coding-evolution discovery over CDS")
+    pdv.add_argument("genes", nargs="+", metavar="name=cds.fasta")
+    pdv.add_argument("--mito", action="store_true",
+                     help="use the vertebrate mitochondrial genetic code (table 2)")
+    pdv.add_argument("--literature", action="store_true",
+                     help="(reserved) perform external novelty validation if network is available")
+    pdv.add_argument("--no-sandbox", action="store_true", help="disable the default execution sandbox")
+    pdv.add_argument("--no-strict", action="store_true",
+                     help="disable strict production policy enforcement (NOT recommended)")
+    pdv.add_argument("--run-id", dest="run_id", default=None)
+    pdv.set_defaults(func=_cmd_discover)
+
     prn = sub.add_parser("runs", help="catalogue every run + its outcome/verdicts")
     prn.set_defaults(func=_cmd_runs)
+
+    pv = sub.add_parser("verify", help="run the multi-agent verification panel over a run")
+    pv.add_argument("run_dir", help="run directory to verify")
+    pv.add_argument("--claims", default=None, help="path to a CLAIMS.json of scientific claims")
+    pv.add_argument("--protect", action="append", default=None,
+                    help="protected root(s) that outputs must not touch (repeatable)")
+    pv.set_defaults(func=_cmd_verify)
 
     psc = sub.add_parser("sandbox-check", help="prove the sandbox denies network egress")
     psc.set_defaults(func=_cmd_sandbox_check)
