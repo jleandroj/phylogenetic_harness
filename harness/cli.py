@@ -266,6 +266,17 @@ def _cmd_pipeline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_audit(args: argparse.Namespace) -> int:
+    """Operator-facing view of EVERYTHING: runs + tool calls (incl. out-of-harness)."""
+    from . import audit
+    if args.full:
+        for r in audit.read():
+            sys.stdout.write(json.dumps(r, sort_keys=True) + "\n")
+        return 0
+    sys.stdout.write(json.dumps(audit.summary(), indent=2) + "\n")
+    return 0
+
+
 def _cmd_genome_phylo(args: argparse.Namespace) -> int:
     """Whole-genome alignment-free phylogeny (Mash + NJ), fully inside the harness."""
     import shutil
@@ -362,6 +373,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="assert whether the loci are independent (ASTRAL is invalid on linked loci)")
     pp.add_argument("--run-id", dest="run_id", default=None)
     pp.set_defaults(func=_cmd_pipeline)
+
+    pau = sub.add_parser("audit", help="operator view of all runs + tool calls (machine-wide)")
+    pau.add_argument("--full", action="store_true", help="print every audit record")
+    pau.set_defaults(func=_cmd_audit)
 
     pg = sub.add_parser("genome-phylo", help="whole-genome alignment-free phylogeny (Mash + NJ)")
     pg.add_argument("genomes", nargs="+", metavar="label=genome.fa")
