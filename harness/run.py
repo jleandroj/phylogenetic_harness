@@ -8,6 +8,7 @@ capture, tool/validator registries, approval gate and executor, and lays out the
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,7 @@ class RunConfig:
     output_dir: str = ""
     sandbox: bool = False           # wrap tool execution in a sandbox (bwrap/apptainer)
     sandbox_backend: str = "auto"
+    strict: bool = False            # enforce the production RunPolicy at run start
 
     def __post_init__(self) -> None:
         if self.mode not in VALID_MODES:
@@ -68,10 +70,20 @@ class Run:
     def __init__(self, config: RunConfig, *, base_dir: str | Path = "runs", clock_fn=clock.iso_now):
         self.config = config
         self._clock = clock_fn
+
+        # Strict policy gate (production): block a non-compliant run up front.
+        if getattr(config, "strict", False):
+            from .policy import RunPolicy
+            RunPolicy.production().enforce(config)
+
         out = config.output_dir or str(Path(base_dir) / config.run_id)
         self.dir = Path(out)
         for sub in ("events", "logs", "results"):
             (self.dir / sub).mkdir(parents=True, exist_ok=True)
+
+        # Mark this process (and all child tools) as running INSIDE the harness, so
+        # the shell guard can tell harness tool calls from out-of-harness ones.
+        os.environ["HARNESS_RUN_ID"] = config.run_id
 
         # Freeze config to disk first (spec §24.13).
         (self.dir / "RUN_CONFIG.json").write_text(
@@ -117,6 +129,11 @@ class Run:
             executor=config.executor,
         )
         self.logger.info("run created", config_hash=config.config_hash, mode=config.mode)
+        # Central audit (machine-wide visibility for the operator).
+        from . import audit
+        audit.record("run_started", run_id=config.run_id, config_hash=config.config_hash,
+                     mode=config.mode, sandbox=config.sandbox, strict=getattr(config, "strict", False),
+                     run_dir=str(self.dir), clock=clock_fn if clock_fn is not clock.iso_now else None)
 
     def capture_environment(self) -> dict[str, Any]:
         snap = capture_environment(self.dir, timestamp_iso=self._clock(), disk_path=self.dir)
@@ -163,6 +180,8 @@ class Run:
         self.events.emit(EventType.RUN_FINISHED, run_id=self.config.run_id)
         self.logger.info("run finished")
         self.logger.close()
+        from . import audit
+        audit.record("run_finished", run_id=self.config.run_id, run_dir=str(self.dir))
 
 
 def new_run_id(suffix: str = "001") -> str:

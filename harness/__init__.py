@@ -16,6 +16,7 @@ __version__ = "0.1.0"
 from . import (  # noqa: F401,E402
     aggregate,
     approval,
+    audit,
     bio,
     bio_report,
     clock,
@@ -32,6 +33,7 @@ from . import (  # noqa: F401,E402
     logging_json,
     manifest,
     phylo_guards,
+    policy,
     recovery,
     redaction,
     report,

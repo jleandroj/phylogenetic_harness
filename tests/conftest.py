@@ -10,6 +10,9 @@ sys.path.insert(0, str(REPO))
 
 TOOLS_DIR = REPO / "tools"
 
+# Never pollute the operator's real audit log from tests.
+os.environ["HARNESS_AUDIT_LOG"] = str(REPO / ".pytest_audit.jsonl")
+
 # Explicitly expose the dedicated phylo_extra env (iqtree/astral) via the public
 # mechanism — import no longer mutates PATH (audit round 4).
 _EXTRA = Path.home() / "miniconda3" / "envs" / "phylo_extra" / "bin"
