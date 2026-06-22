@@ -1,5 +1,7 @@
 """Iter 1-2: central audit log + strict run policy (governance/observability)."""
 
+import json
+
 import pytest
 
 from harness import audit
