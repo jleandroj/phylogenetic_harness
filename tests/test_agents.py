@@ -140,3 +140,23 @@ def test_agents_never_raise(tmp_path, monkeypatch, agent_cls):
     rd = _mkrun(tmp_path, [_bundle()])
     v = agent_cls().check(AgentContext.load(rd))      # must return a Verdict, never raise
     assert v.status in set(AgentStatus)
+
+
+def test_run_finish_auto_verifies(tmp_path, monkeypatch):
+    """Integration: Run.finish() runs the panel automatically and records it."""
+    monkeypatch.setenv("HARNESS_AUDIT_LOG", str(tmp_path / "a.jsonl"))
+    from harness.run import Run, RunConfig
+    run = Run(RunConfig(run_id="vfin", mode="test"), base_dir=tmp_path)
+    run.finish()
+    assert run.verification is not None
+    assert run.verification["status"] in {s.value for s in FinalStatus}
+    assert (run.dir / "VERIFICATION.json").exists()
+
+
+def test_run_finish_verify_can_be_disabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("HARNESS_AUDIT_LOG", str(tmp_path / "a.jsonl"))
+    from harness.run import Run, RunConfig
+    run = Run(RunConfig(run_id="vfin2", mode="test"), base_dir=tmp_path)
+    run.finish(verify=False)
+    assert run.verification is None
+    assert not (run.dir / "VERIFICATION.json").exists()

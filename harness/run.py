@@ -182,18 +182,31 @@ class Run:
         path.write_text(json.dumps(lock, indent=2, sort_keys=True), encoding="utf-8")
         return path
 
-    def finish(self) -> None:
+    def finish(self, *, verify: bool = True, claims_path: str | Path | None = None,
+               protected_roots: tuple[str, ...] = ()) -> None:
         self.events.emit(EventType.RUN_FINISHED, run_id=self.config.run_id)
         # Automatic summary + anomaly detection (production guarantee #2).
         from . import audit, autoreport
         report = autoreport.generate(self.dir, run_id=self.config.run_id)
         self.logger.info("run finished", anomalies=report["n_anomalies"], alert=report["alert"])
-        self.logger.close()
         audit.record("run_finished", run_id=self.config.run_id, run_dir=str(self.dir),
                      anomalies=report["n_anomalies"])
         if report["n_anomalies"]:
             audit.record("run_anomalies", run_id=self.config.run_id,
                          kinds=sorted({a["kind"] for a in report["anomalies"]}))
+        # Automatic scientific verification (the multi-agent honesty panel). A run is
+        # never presented as a result without the coordinator's verdict; failures
+        # here never break the run (fault isolation) — they downgrade the verdict.
+        self.verification: dict[str, Any] | None = None
+        if verify:
+            try:
+                from .agents import verify_run
+                self.verification = verify_run(self.dir, claims_path=claims_path,
+                                               protected_roots=protected_roots)
+                self.logger.info("verification", status=self.verification["status"])
+            except Exception as exc:  # noqa: BLE001 - never let verification crash a run
+                self.logger.info("verification_error", error=str(exc))
+        self.logger.close()
 
 
 def new_run_id(suffix: str = "001") -> str:

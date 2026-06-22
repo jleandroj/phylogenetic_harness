@@ -20,6 +20,15 @@ from .run import Run, RunConfig, new_run_id
 from .tasks import FailurePolicy, ResourceRequest, Task
 
 
+def _verdict(run: Run) -> dict | None:
+    """The run's automatic multi-agent verification verdict (status + rationale)."""
+    v = getattr(run, "verification", None)
+    if not v:
+        return None
+    return {"status": v.get("status"), "rationale": v.get("rationale"),
+            "allow_biological_conclusion": v.get("allow_biological_conclusion")}
+
+
 def _cmd_capture_env(args: argparse.Namespace) -> int:
     out = Path(args.out)
     snap = capture_environment(out, timestamp_iso=clock.iso_now(), disk_path=out if out.exists() else ".")
@@ -132,6 +141,7 @@ def _cmd_demo_run(args: argparse.Namespace) -> int:
         "run_dir": str(run.dir), "report": paths,
         "technical_state": bundle["status_technical"],
         "scientific_state": bundle["status_scientific"],
+        "verification": _verdict(run),
     }, indent=2) + "\n")
     return 0
 
@@ -161,6 +171,7 @@ def _cmd_phylo(args: argparse.Namespace) -> int:
     tree = out.get("tree") or {}
     sys.stdout.write(json.dumps({
         "run_dir": str(run.dir),
+        "verification": _verdict(run),
         "msa": out["msa"]["status_technical"],
         "tree": tree.get("status_technical"),
         "scientific_state": tree.get("status_scientific"),
@@ -192,6 +203,7 @@ def _cmd_compare(args: argparse.Namespace) -> int:
     run.finish()
     sys.stdout.write(json.dumps({
         "run_dir": str(run.dir),
+        "verification": _verdict(run),
         "genes": {n: {"tree": (g.get("tree") or {}).get("status_technical"),
                       "scientific": (g.get("tree") or {}).get("status_scientific")}
                   for n, g in out["genes"].items()},
@@ -250,6 +262,7 @@ def _cmd_pipeline(args: argparse.Namespace) -> int:
     sp = out["species_tree"] or {}
     sys.stdout.write(json.dumps({
         "run_dir": str(run.dir),
+        "verification": _verdict(run),
         "report": report_paths,
         "model_selection": out["model_selection"],
         "genes": {n: {"method": g.get("method"), "model": g.get("model"),
@@ -307,10 +320,12 @@ def _cmd_discover(args: argparse.Namespace) -> int:
     aggregate_run(run.dir)
     report_paths = generate_discovery_report(run.dir, genes, out, run_id=cfg.run_id,
                                              literature=args.literature)
-    run.finish()
+    gene_dirs = tuple({str(Path(p).resolve().parent) for p in genes.values() if Path(p).exists()})
+    run.finish(protected_roots=gene_dirs)
     best = out.get("best")
     sys.stdout.write(json.dumps({
         "run_dir": str(run.dir),
+        "verification": _verdict(run),
         "report": report_paths.get("report"),
         "genetic_code_table": out["table"],
         "genes_scanned": sum(1 for g in out["genes"].values() if g.get("scan")),
@@ -431,9 +446,12 @@ def _cmd_genome_phylo(args: argparse.Namespace) -> int:
                             tools_lock=tools_lock, seed_record=run.seeds.record(),
                             input_paths=[p for p in genomes.values() if Path(p).exists()])
     aggregate_run(run.dir)
-    run.finish()
+    # Protect every source-genome directory: no task output may ever clobber them.
+    genome_dirs = tuple({str(Path(p).resolve().parent) for p in genomes.values() if Path(p).exists()})
+    run.finish(protected_roots=genome_dirs)
     sys.stdout.write(json.dumps({
         "run_dir": str(run.dir),
+        "verification": _verdict(run),
         "tree": out.get("tree_path"),
         "dist_matrix": out.get("dist_tsv"),
         "reconstructed_taxa": out.get("reconstructed"),
