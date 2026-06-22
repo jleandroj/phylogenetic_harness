@@ -193,6 +193,8 @@ class LocalExecutor:
         gpu_assigned: str | None = None,
         attempt: int = 1,
         stdout_to: str | os.PathLike[str] | None = None,
+        rlimit_cpu_seconds: int | None = None,
+        rlimit_as_gb: float | None = None,
     ) -> ExecutionResult:
         argv = _require_argv(command)
         # Optionally wrap the command in a sandbox (audit round 4 #3 -> default in
@@ -251,9 +253,22 @@ class LocalExecutor:
                 stdout_target: Any = out_fh
             else:
                 stdout_target = subprocess.PIPE
+            # Optional hard resource limits on the child (containment backstop).
+            preexec = None
+            if (rlimit_cpu_seconds or rlimit_as_gb) and hasattr(os, "setpgrp"):
+                import resource as _res
+
+                def preexec() -> None:  # runs in the child before exec
+                    if rlimit_cpu_seconds:
+                        _res.setrlimit(_res.RLIMIT_CPU,
+                                       (int(rlimit_cpu_seconds), int(rlimit_cpu_seconds) + 5))
+                    if rlimit_as_gb:
+                        b = int(rlimit_as_gb * 2 ** 30)
+                        _res.setrlimit(_res.RLIMIT_AS, (b, b))
             proc = subprocess.Popen(
                 argv, shell=False, stdout=stdout_target, stderr=subprocess.PIPE,
                 cwd=str(cwd) if cwd else None, env=child_env, bufsize=0,
+                preexec_fn=preexec,
             )
             pid = proc.pid
             sampler = PidSampler(pid)

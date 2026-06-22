@@ -266,6 +266,23 @@ def _cmd_pipeline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_kill(args: argparse.Namespace) -> int:
+    """Kill-switch: stop a run (or --panic to stop ALL runs)."""
+    from . import audit, killswitch
+    if args.panic:
+        p = killswitch.panic()
+        audit.record("panic", path=str(p))
+        sys.stderr.write(f"PANIC: global STOP set at {p} — all runs will abort at their next task\n")
+    elif args.run_dir:
+        p = killswitch.stop(args.run_dir)
+        audit.record("kill", run_dir=args.run_dir, path=str(p))
+        sys.stderr.write(f"STOP set at {p} — that run aborts at its next task\n")
+    else:
+        sys.stderr.write("usage: harness kill <run_dir> | harness kill --panic\n")
+        return 2
+    return 0
+
+
 def _cmd_runs(args: argparse.Namespace) -> int:
     """Catalogue of every run + its outcome (technical + scientific verdicts)."""
     from .registry import list_runs
@@ -390,6 +407,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     prn = sub.add_parser("runs", help="catalogue every run + its outcome/verdicts")
     prn.set_defaults(func=_cmd_runs)
+
+    pk = sub.add_parser("kill", help="kill-switch: STOP a run (or --panic to stop ALL runs)")
+    pk.add_argument("run_dir", nargs="?", help="run directory to stop")
+    pk.add_argument("--panic", action="store_true", help="set the global STOP marker (all runs)")
+    pk.set_defaults(func=_cmd_kill)
 
     pau = sub.add_parser("audit", help="operator view of all runs + tool calls (machine-wide)")
     pau.add_argument("--full", action="store_true", help="print every audit record")

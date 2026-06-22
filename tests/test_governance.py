@@ -95,7 +95,6 @@ def test_audit_chain_is_tamper_evident(tmp_path, monkeypatch):
 
 
 def test_autoreport_on_finish_clean_and_anomalous(runner_factory, tmp_path, monkeypatch):
-    from harness import autoreport
     from harness.run import Run, RunConfig
     monkeypatch.setenv("HARNESS_AUDIT_LOG", str(tmp_path / "a.jsonl"))
     run = Run(RunConfig(run_id="arun", mode="test"), base_dir=tmp_path)

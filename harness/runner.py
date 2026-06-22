@@ -52,6 +52,7 @@ class TaskRunner:
         worker_id: str = "worker-0",
         clock_fn=None,
         hooks=None,
+        tool_allowlist=None,
     ) -> None:
         self.events = events
         self.tools = tools
@@ -64,6 +65,9 @@ class TaskRunner:
         self.seeds = seeds
         self.worker_id = worker_id
         self._clock = clock_fn or (lambda: 0)
+        # Containment: an optional allowlist of permitted tool_ids (None = registry
+        # gate only). The kill-switch is checked per task from the run dir.
+        self.tool_allowlist = set(tool_allowlist) if tool_allowlist is not None else None
         # Lifecycle hooks (audit round 4 #1). Default: an empty, no-op registry.
         if hooks is None:
             from .hooks import HookRegistry
@@ -192,6 +196,30 @@ class TaskRunner:
         validator_kwargs = dict(validator_kwargs or {})
 
         self.events.emit(EventType.TASK_CREATED, task_id=task.task_id, tool_id=task.tool_id)
+
+        # CONTAINMENT (production guarantee #3), checked before anything runs:
+        # kill-switch + action allowlist. A blocked task is recorded and returns a
+        # FAILED_FATAL bundle — it never executes, and the harness does not crash.
+        from . import audit, killswitch
+        run_dir = self.results_dir.parent
+        stopped, scope = killswitch.is_stopped(run_dir)
+        block_reason = None
+        if stopped:
+            block_reason = f"kill-switch active ({scope})"
+        elif self.tool_allowlist is not None and task.tool_id not in self.tool_allowlist:
+            block_reason = f"tool '{task.tool_id}' not in action allowlist"
+        if block_reason:
+            self.events.emit(EventType.TASK_FAILED, task_id=task.task_id, reason=block_reason,
+                             state=TechnicalState.FAILED_FATAL.value)
+            audit.record("action_blocked", task_id=task.task_id, tool=task.tool_id,
+                         reason=block_reason)
+            bundle = {"task_id": task.task_id, "task_type": task.task_type, "tool_id": task.tool_id,
+                      "status_technical": "FAILED_FATAL", "status_scientific": "NOT_EVALUATED",
+                      "blocked": True, "block_reason": block_reason, "degenerate": False,
+                      "validators_passed": False, "retries": 0, "outputs": [],
+                      "execution": None, "validation": [], "interpretation": {}}
+            self._persist_bundle(task.task_id, bundle)
+            return bundle
 
         # Gates run BEFORE any lease/state change; their exceptions propagate as
         # before (no lease to leak yet).
