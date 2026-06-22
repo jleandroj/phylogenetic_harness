@@ -283,6 +283,17 @@ def _cmd_kill(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_trace(args: argparse.Namespace) -> int:
+    """Reconstruct exactly what happened in a run (audit + events + verdicts)."""
+    from . import trace as _trace
+    tr = _trace.trace(args.run)
+    if args.json:
+        sys.stdout.write(json.dumps(tr, indent=2, default=str) + "\n")
+    else:
+        sys.stdout.write(_trace.format_trace(tr) + "\n")
+    return 0 if tr.get("found") else 1
+
+
 def _cmd_runs(args: argparse.Namespace) -> int:
     """Catalogue of every run + its outcome (technical + scientific verdicts)."""
     from .registry import list_runs
@@ -407,6 +418,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     prn = sub.add_parser("runs", help="catalogue every run + its outcome/verdicts")
     prn.set_defaults(func=_cmd_runs)
+
+    pt = sub.add_parser("trace", help="reconstruct exactly what happened in a run")
+    pt.add_argument("run", help="run_id or run directory")
+    pt.add_argument("--json", action="store_true", help="emit the raw merged timeline as JSON")
+    pt.set_defaults(func=_cmd_trace)
 
     pk = sub.add_parser("kill", help="kill-switch: STOP a run (or --panic to stop ALL runs)")
     pk.add_argument("run_dir", nargs="?", help="run directory to stop")
