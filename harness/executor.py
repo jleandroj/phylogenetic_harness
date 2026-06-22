@@ -233,6 +233,9 @@ class LocalExecutor:
         child_env = dict(os.environ if env is None else env)
         if gpu_assigned is not None:
             child_env["CUDA_VISIBLE_DEVICES"] = str(gpu_assigned)
+        # Never expose the audit-signing key to a tool the agent controls: a leaked
+        # key would let a malicious tool forge the tamper-proof audit chain.
+        child_env.pop("HARNESS_AUDIT_KEY", None)
 
         probe = ChildResourceProbe(self.disk_path)
         started_at = self._clock()

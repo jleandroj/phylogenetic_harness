@@ -50,9 +50,28 @@ def ensure_writable() -> Path:
     return path
 
 
-def _last_hash(path: Path) -> str:
-    """sha256 of the last record line (the chain head), or GENESIS if empty."""
+AUDIT_KEY_ENV = "HARNESS_AUDIT_KEY"
+
+
+def _chain_mac(line: bytes) -> str:
+    """Chain link over one record line.
+
+    If ``HARNESS_AUDIT_KEY`` is set, this is a keyed HMAC-SHA256: an agent that can
+    write the log still cannot recompute a valid chain without the operator's key
+    (tamper-PROOF). The executor strips that key from every child tool's
+    environment, so a malicious tool cannot read it. With no key set it degrades to
+    a plain sha256 chain (tamper-EVIDENT), preserving backward compatibility.
+    """
     import hashlib
+    import hmac
+    key = os.environ.get(AUDIT_KEY_ENV)
+    if key:
+        return "hmac:" + hmac.new(key.encode("utf-8"), line, hashlib.sha256).hexdigest()
+    return hashlib.sha256(line).hexdigest()
+
+
+def _last_hash(path: Path) -> str:
+    """Chain MAC of the last record line (the chain head), or GENESIS if empty."""
     if not path.exists() or path.stat().st_size == 0:
         return "GENESIS"
     last = b""
@@ -60,7 +79,7 @@ def _last_hash(path: Path) -> str:
         for line in fh:
             if line.strip():
                 last = line
-    return hashlib.sha256(last).hexdigest()
+    return _chain_mac(last)
 
 
 def record(event: str, *, clock=None, **fields: Any) -> dict[str, Any]:
@@ -106,10 +125,10 @@ def _record_locked(path, event, clock, fields, _clock) -> dict[str, Any]:
 def verify(path: str | Path | None = None) -> dict[str, Any]:
     """Verify the hash chain: returns {ok, broken_at}. A broken chain means the
     log was edited/truncated out of band (tamper detected)."""
-    import hashlib
     p = Path(path) if path else audit_path()
+    keyed = bool(os.environ.get(AUDIT_KEY_ENV))
     if not p.exists():
-        return {"ok": True, "records": 0, "broken_at": None}
+        return {"ok": True, "records": 0, "broken_at": None, "keyed": keyed}
     lines = [ln for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
     expected = "GENESIS"
     for i, ln in enumerate(lines):
@@ -118,9 +137,10 @@ def verify(path: str | Path | None = None) -> dict[str, Any]:
         except json.JSONDecodeError:
             return {"ok": False, "records": len(lines), "broken_at": i, "reason": "unparseable"}
         if rec.get("prev") != expected:
-            return {"ok": False, "records": len(lines), "broken_at": i, "reason": "prev mismatch"}
-        expected = hashlib.sha256((ln + "\n").encode("utf-8")).hexdigest()
-    return {"ok": True, "records": len(lines), "broken_at": None}
+            return {"ok": False, "records": len(lines), "broken_at": i,
+                    "reason": "prev mismatch", "keyed": keyed}
+        expected = _chain_mac((ln + "\n").encode("utf-8"))
+    return {"ok": True, "records": len(lines), "broken_at": None, "keyed": keyed}
 
 
 def read(path: str | Path | None = None) -> list[dict[str, Any]]:
