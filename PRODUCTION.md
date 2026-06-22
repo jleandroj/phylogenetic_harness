@@ -106,6 +106,40 @@ harness resume runs/<run_id>    # finish a crashed run; quarantine poison tasks
 
 ---
 
+## Round 2 — deeper hardening (assume the agent attacks the harness itself)
+
+The first round made the five guarantees real. The second round assumes a
+bad-faith agent that attacks the controls themselves:
+
+1. **Fail-closed bitácora** — if the audit log cannot be durably written
+   (`fsync`), no task runs (`audit.ensure_writable`). Filling the disk can't buy
+   un-logged execution.
+2. **Tamper-PROOF audit** — `HARNESS_AUDIT_KEY` turns the chain into a keyed
+   HMAC; the key is stripped from every child tool's environment, so a tool can't
+   forge records. `harness audit --verify` reports `keyed`.
+3. **Rollback detection** — a monotonic `seq` + fsync'd high-water-mark anchor;
+   deleting recent records is caught as "truncated below high-water mark".
+4. **Command-line secret redaction** — `--token sk-…` is masked in the audit
+   chain, events, and on-disk bundles; the real argv still executes.
+5. **Process-tree kill** — tools run in their own session; timeout/kill reaps the
+   whole group, so no orphaned grandchildren escape.
+6. **Safe-by-default rlimits** — `RLIMIT_CORE=0` always (cores leak memory + fill
+   disk); opt-in `nproc`/`fsize` caps (fork-bomb / disk-fill). `AS` left off (JVM).
+7. **Proven network containment** — `harness sandbox-check` runs a real egress
+   probe inside the sandbox; containment is verified, not assumed.
+8. **Output confinement** — a task can never write into a system root, an
+   operator-marked protected root (the read-only genomes), or via `..`.
+9. **Graceful shutdown** — SIGTERM/SIGINT arm the kill-switch, record
+   `run_interrupted`, and unwind so leases release and children die (no zombies).
+10. **Input integrity** — a task with a baseline of input hashes is refused if the
+    on-disk bytes changed (mutated source data); every bundle records
+    `inputs_sha256` (which bytes were consumed).
+
+```
+harness sandbox-check                 # certify the sandbox blocks network egress
+HARNESS_AUDIT_KEY=… harness audit --verify   # verify the keyed tamper-proof chain
+```
+
 ## CI gate
 
 `bash scripts/ci.sh` runs ruff + mypy + the full pytest suite. Production changes
