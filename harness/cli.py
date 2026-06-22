@@ -279,6 +279,10 @@ def _cmd_runs(args: argparse.Namespace) -> int:
 def _cmd_audit(args: argparse.Namespace) -> int:
     """Operator-facing view of EVERYTHING: runs + tool calls (incl. out-of-harness)."""
     from . import audit
+    if args.verify:
+        v = audit.verify()
+        sys.stdout.write(json.dumps(v, indent=2) + "\n")
+        return 0 if v["ok"] else 1
     if args.full:
         for r in audit.read():
             sys.stdout.write(json.dumps(r, sort_keys=True) + "\n")
@@ -389,6 +393,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     pau = sub.add_parser("audit", help="operator view of all runs + tool calls (machine-wide)")
     pau.add_argument("--full", action="store_true", help="print every audit record")
+    pau.add_argument("--verify", action="store_true", help="verify the tamper-evident hash chain")
     pau.set_defaults(func=_cmd_audit)
 
     pg = sub.add_parser("genome-phylo", help="whole-genome alignment-free phylogeny (Mash + NJ)")

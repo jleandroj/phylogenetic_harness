@@ -53,7 +53,8 @@ def test_in_harness_tool_call_audited(runner_factory, tmp_path, monkeypatch):
     log = tmp_path / "a.jsonl"
     monkeypatch.setenv("HARNESS_AUDIT_LOG", str(log))
     runner, _, _ = runner_factory()
-    src = tmp_path / "s.txt"; src.write_text("x\n")
+    src = tmp_path / "s.txt"
+    src.write_text("x\n")
     out = tmp_path / "o.txt"
     task = Task(task_id="r.t", run_id="r", task_type="copy", tool_id="cp",
                 command_template="cp", command_argv=["cp", str(src), str(out)],
@@ -73,3 +74,18 @@ def test_run_registry_lists_runs(tmp_path, monkeypatch):
     r.finish()
     runs = registry.list_runs()
     assert any(x["run_id"] == "regrun" and x["finished"] for x in runs)
+
+
+def test_audit_chain_is_tamper_evident(tmp_path, monkeypatch):
+    log = tmp_path / "a.jsonl"
+    monkeypatch.setenv("HARNESS_AUDIT_LOG", str(log))
+    for i in range(5):
+        audit.record("x", i=i)
+    assert audit.verify()["ok"] is True
+    # Tamper: edit a middle line -> chain breaks.
+    lines = log.read_text().splitlines()
+    rec = json.loads(lines[2]); rec["i"] = 999
+    lines[2] = json.dumps(rec, sort_keys=True)
+    log.write_text("\n".join(lines) + "\n")
+    v = audit.verify()
+    assert v["ok"] is False and v["broken_at"] is not None

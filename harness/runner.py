@@ -131,6 +131,14 @@ class TaskRunner:
             disk_aborted=result.disk_aborted,
             truncated=result.truncated_stdout or result.truncated_stderr,
         )
+        # Full action record in the central audit (input/output/duration/exit/fail).
+        audit.record(
+            "action_finished", task_id=task.task_id, tool=task.tool_id, attempt=attempt,
+            argv=argv, inputs=task.inputs, outputs=task.outputs_expected,
+            exit_code=result.exit_code, wall_seconds=result.wall_seconds,
+            timed_out=result.timed_out, ok=result.succeeded,
+            stdout_log=result.stdout_path, stderr_log=result.stderr_path,
+        )
         self.events.emit(EventType.VALIDATION_STARTED, task_id=task.task_id)
         checks: list[CheckResult] = []
         for out in task.outputs_expected:
