@@ -286,6 +286,18 @@ def _cmd_kill(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sandbox_check(args: argparse.Namespace) -> int:
+    """Prove (not assume) that the sandbox denies network egress."""
+    from .sandbox import verify_network_blocked
+    res = verify_network_blocked()
+    sys.stdout.write(json.dumps(res, indent=2) + "\n")
+    if res["backend"] is None:
+        sys.stderr.write("no sandbox backend installed — network containment NOT available\n")
+        return 2
+    sys.stderr.write(("OK: " if res["blocked"] else "FAIL: ") + res["detail"] + "\n")
+    return 0 if res["blocked"] else 1
+
+
 def _cmd_trace(args: argparse.Namespace) -> int:
     """Reconstruct exactly what happened in a run (audit + events + verdicts)."""
     from . import trace as _trace
@@ -425,6 +437,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     prn = sub.add_parser("runs", help="catalogue every run + its outcome/verdicts")
     prn.set_defaults(func=_cmd_runs)
+
+    psc = sub.add_parser("sandbox-check", help="prove the sandbox denies network egress")
+    psc.set_defaults(func=_cmd_sandbox_check)
 
     pt = sub.add_parser("trace", help="reconstruct exactly what happened in a run")
     pt.add_argument("run", help="run_id or run directory")

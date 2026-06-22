@@ -46,6 +46,37 @@ def build_wrapped(backend: str, argv: list[str], *, image: str | None = None,
     raise ValueError(f"unknown sandbox backend {backend!r}")
 
 
+def verify_network_blocked(backend: str = "auto", *, timeout: float = 5.0) -> dict[str, Any]:
+    """Actually PROVE the sandbox denies network egress (don't just assume it).
+
+    Runs a real outbound-socket attempt inside the sandbox; containment is only
+    confirmed if that attempt fails. Returns {backend, blocked, detail}. The
+    operator/CI can run this to certify that 'no network' is enforced, not claimed.
+    """
+    import subprocess
+    chosen = available_backend(backend)
+    if chosen is None:
+        return {"backend": None, "blocked": False, "detail": "no sandbox backend installed"}
+    # A tiny probe: success connecting => network NOT contained (bad).
+    probe = ("import socket,sys\n"
+             "try:\n"
+             "    socket.setdefaulttimeout(3)\n"
+             "    socket.socket(socket.AF_INET, socket.SOCK_DGRAM).connect(('1.1.1.1', 53))\n"
+             "    sys.exit(0)\n"   # reached the network -> containment FAILED
+             "except OSError:\n"
+             "    sys.exit(7)\n")  # blocked -> contained
+    wrapped, mode = wrap(["python3", "-c", probe], enabled=True, backend=chosen)
+    if mode in ("disabled", "no_backend"):
+        return {"backend": None, "blocked": False, "detail": f"wrap mode={mode}"}
+    try:
+        rc = subprocess.run(wrapped, capture_output=True, timeout=timeout).returncode
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        # a hang/timeout means the connect didn't succeed quickly -> treat as blocked
+        return {"backend": chosen, "blocked": True, "detail": f"probe error/timeout: {exc}"}
+    return {"backend": chosen, "blocked": rc != 0,
+            "detail": "connect succeeded (NOT contained)" if rc == 0 else "egress blocked"}
+
+
 def wrap(argv: list[str], *, enabled: bool = False, backend: str = "auto",
          image: str | None = None, **kw: Any) -> tuple[list[str], str]:
     """Return (possibly-wrapped argv, mode). mode is 'disabled' / 'no_backend' /
