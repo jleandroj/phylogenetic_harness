@@ -36,6 +36,7 @@ from . import (  # noqa: F401,E402
     policy,
     recovery,
     redaction,
+    registry,
     report,
     resources,
     resume,

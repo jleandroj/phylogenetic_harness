@@ -62,3 +62,14 @@ def test_in_harness_tool_call_audited(runner_factory, tmp_path, monkeypatch):
     runner.run_task(task)
     tool_calls = [r for r in audit.read() if r["event"] == "tool_call"]
     assert any(r.get("tool") == "cp" and r.get("in_harness") for r in tool_calls)
+
+
+def test_run_registry_lists_runs(tmp_path, monkeypatch):
+    from harness import registry
+    from harness.run import Run, RunConfig
+    log = tmp_path / "a.jsonl"
+    monkeypatch.setenv("HARNESS_AUDIT_LOG", str(log))
+    r = Run(RunConfig(run_id="regrun", mode="test"), base_dir=tmp_path)
+    r.finish()
+    runs = registry.list_runs()
+    assert any(x["run_id"] == "regrun" and x["finished"] for x in runs)

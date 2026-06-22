@@ -266,6 +266,16 @@ def _cmd_pipeline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_runs(args: argparse.Namespace) -> int:
+    """Catalogue of every run + its outcome (technical + scientific verdicts)."""
+    from .registry import list_runs
+    runs = list_runs()
+    sys.stdout.write(json.dumps(runs, indent=2) + "\n")
+    sys.stderr.write(f"{len(runs)} run(s); "
+                     f"{sum(1 for r in runs if not r['finished'])} unfinished\n")
+    return 0
+
+
 def _cmd_audit(args: argparse.Namespace) -> int:
     """Operator-facing view of EVERYTHING: runs + tool calls (incl. out-of-harness)."""
     from . import audit
@@ -373,6 +383,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="assert whether the loci are independent (ASTRAL is invalid on linked loci)")
     pp.add_argument("--run-id", dest="run_id", default=None)
     pp.set_defaults(func=_cmd_pipeline)
+
+    prn = sub.add_parser("runs", help="catalogue every run + its outcome/verdicts")
+    prn.set_defaults(func=_cmd_runs)
 
     pau = sub.add_parser("audit", help="operator view of all runs + tool calls (machine-wide)")
     pau.add_argument("--full", action="store_true", help="print every audit record")
