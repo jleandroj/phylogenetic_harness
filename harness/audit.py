@@ -97,13 +97,30 @@ def record(event: str, *, clock=None, **fields: Any) -> dict[str, Any]:
         raise AuditUnavailable(f"could not append audit record to {path}: {exc}") from exc
 
 
+def _hwm_path(path: Path) -> Path:
+    return path.with_suffix(path.suffix + ".hwm")
+
+
+def _read_hwm(path: Path) -> dict[str, Any] | None:
+    hp = _hwm_path(path)
+    if not hp.exists():
+        return None
+    try:
+        return json.loads(hp.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def _record_locked(path, event, clock, fields, _clock) -> dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a+", encoding="utf-8") as fh:
         if _HAVE_FCNTL:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         try:
+            hwm = _read_hwm(path) or {"max_seq": 0, "count": 0}
+            seq = int(hwm.get("max_seq", 0)) + 1
             rec: dict[str, Any] = {
+                "seq": seq,                # monotonic, never reused -> rollback-detectable
                 "ts": (clock or _clock.iso_now)(),
                 "event": event,
                 "host": os.uname().nodename if hasattr(os, "uname") else None,
@@ -113,9 +130,21 @@ def _record_locked(path, event, clock, fields, _clock) -> dict[str, Any]:
                 "prev": _last_hash(path),  # hash chain -> tamper-evident
             }
             rec.update(fields)
-            fh.write(json.dumps(rec, sort_keys=True, default=str) + "\n")
+            line = json.dumps(rec, sort_keys=True, default=str) + "\n"
+            fh.write(line)
             fh.flush()
             os.fsync(fh.fileno())  # durability: the record survives a crash/power loss
+            # High-water mark anchor: an attacker who truncates the log to drop
+            # recent records leaves count/seq below the anchor -> verify() detects it.
+            head_mac = _chain_mac(line.encode("utf-8"))
+            hp = _hwm_path(path)
+            tmp = hp.with_suffix(hp.suffix + ".tmp")
+            tmp.write_text(json.dumps({"max_seq": seq, "count": int(hwm.get("count", 0)) + 1,
+                                       "head_mac": head_mac}, sort_keys=True), encoding="utf-8")
+            with open(tmp, "r+", encoding="utf-8") as tfh:
+                tfh.flush()
+                os.fsync(tfh.fileno())
+            os.replace(tmp, hp)
         finally:
             if _HAVE_FCNTL:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
@@ -140,6 +169,15 @@ def verify(path: str | Path | None = None) -> dict[str, Any]:
             return {"ok": False, "records": len(lines), "broken_at": i,
                     "reason": "prev mismatch", "keyed": keyed}
         expected = _chain_mac((ln + "\n").encode("utf-8"))
+    # Rollback / truncation check against the high-water mark anchor.
+    hwm = _read_hwm(p)
+    if hwm is not None:
+        last_seq = json.loads(lines[-1]).get("seq", 0) if lines else 0
+        if len(lines) < int(hwm.get("count", 0)) or last_seq < int(hwm.get("max_seq", 0)):
+            return {"ok": False, "records": len(lines), "broken_at": len(lines) - 1,
+                    "reason": "truncated below high-water mark "
+                              f"(have {len(lines)} seq<={last_seq}, anchor "
+                              f"{hwm.get('count')} seq={hwm.get('max_seq')})", "keyed": keyed}
     return {"ok": True, "records": len(lines), "broken_at": None, "keyed": keyed}
 
 
