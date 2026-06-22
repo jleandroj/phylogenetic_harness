@@ -112,6 +112,10 @@ class TaskRunner:
         """One execution attempt: run + validate. Raises propagate to run_task."""
         self.events.emit(EventType.TASK_STARTED, task_id=task.task_id, attempt=attempt)
         self.events.emit(EventType.COMMAND_STARTED, task_id=task.task_id, command=argv)
+        # Central audit: every in-harness tool call is recorded machine-wide too.
+        from . import audit
+        audit.record("tool_call", tool=task.tool_id, task_id=task.task_id,
+                     task_type=task.task_type, in_harness=True, argv0=argv[0])
         result = self.executor.run(
             task.task_id, argv,
             timeout_seconds=task.failure_policy.timeout_seconds,

@@ -45,3 +45,20 @@ def test_run_writes_audit_records(tmp_path, monkeypatch):
     run.finish()
     events = [r["event"] for r in audit.read()]
     assert "run_started" in events and "run_finished" in events
+
+
+def test_in_harness_tool_call_audited(runner_factory, tmp_path, monkeypatch):
+    from harness import audit
+    from harness.tasks import ResourceRequest, Task
+    log = tmp_path / "a.jsonl"
+    monkeypatch.setenv("HARNESS_AUDIT_LOG", str(log))
+    runner, _, _ = runner_factory()
+    src = tmp_path / "s.txt"; src.write_text("x\n")
+    out = tmp_path / "o.txt"
+    task = Task(task_id="r.t", run_id="r", task_type="copy", tool_id="cp",
+                command_template="cp", command_argv=["cp", str(src), str(out)],
+                inputs=[str(src)], outputs_expected=[str(out)], validators=["file_exists"],
+                resources=ResourceRequest(memory_gb=1))
+    runner.run_task(task)
+    tool_calls = [r for r in audit.read() if r["event"] == "tool_call"]
+    assert any(r.get("tool") == "cp" and r.get("in_harness") for r in tool_calls)
