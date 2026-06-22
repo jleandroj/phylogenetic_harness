@@ -53,6 +53,7 @@ class TaskRunner:
         clock_fn=None,
         hooks=None,
         tool_allowlist=None,
+        protected_roots: tuple[str, ...] = (),
     ) -> None:
         self.events = events
         self.tools = tools
@@ -68,6 +69,9 @@ class TaskRunner:
         # Containment: an optional allowlist of permitted tool_ids (None = registry
         # gate only). The kill-switch is checked per task from the run dir.
         self.tool_allowlist = set(tool_allowlist) if tool_allowlist is not None else None
+        # Containment: outputs may never land in a system root or an operator-marked
+        # protected root (e.g. the read-only genomes), nor use '..' traversal.
+        self.protected_roots = tuple(protected_roots)
         # Lifecycle hooks (audit round 4 #1). Default: an empty, no-op registry.
         if hooks is None:
             from .hooks import HookRegistry
@@ -217,6 +221,12 @@ class TaskRunner:
                 block_reason = f"kill-switch active ({scope})"
             elif self.tool_allowlist is not None and task.tool_id not in self.tool_allowlist:
                 block_reason = f"tool '{task.tool_id}' not in action allowlist"
+            else:
+                from .confine import check_output_confinement
+                escapes = check_output_confinement(
+                    task.outputs_expected, run_dir, protected_roots=self.protected_roots)
+                if escapes:
+                    block_reason = "output path confinement violated: " + "; ".join(escapes)
         if block_reason:
             self.events.emit(EventType.TASK_FAILED, task_id=task.task_id, reason=block_reason,
                              state=TechnicalState.FAILED_FATAL.value)

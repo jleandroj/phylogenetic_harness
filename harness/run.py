@@ -153,8 +153,13 @@ class Run:
                 version=contract.detected_version,
             )
 
-    def build_runner(self, worker_id: str = "worker-0") -> TaskRunner:
-        """The only sanctioned way to execute tasks in this run (audit P0.1)."""
+    def build_runner(self, worker_id: str = "worker-0",
+                     protected_roots: tuple[str, ...] = ()) -> TaskRunner:
+        """The only sanctioned way to execute tasks in this run (audit P0.1).
+
+        ``protected_roots`` marks directories (e.g. read-only source genomes) that
+        no task may ever write into, on top of the always-on system-root denylist.
+        """
         return TaskRunner(
             events=self.events,
             tools=self.tools,
@@ -166,6 +171,7 @@ class Run:
             seeds=self.seeds,
             worker_id=worker_id,
             clock_fn=clock.monotonic,
+            protected_roots=protected_roots,
         )
 
     def write_tools_lock(self) -> Path:

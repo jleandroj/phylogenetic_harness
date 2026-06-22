@@ -35,7 +35,7 @@ from harness.validators import ValidatorRegistry  # noqa: E402
 
 
 def build_runner(base: Path, *, output_cap_bytes: int = 10 * 1024 * 1024, worker_id="worker-0",
-                 tool_allowlist=None):
+                 tool_allowlist=None, protected_roots=()):
     """Assemble a real TaskRunner over real components (no mocks)."""
     base.mkdir(parents=True, exist_ok=True)
     (base / "logs").mkdir(exist_ok=True)
@@ -56,6 +56,7 @@ def build_runner(base: Path, *, output_cap_bytes: int = 10 * 1024 * 1024, worker
         worker_id=worker_id,
         clock_fn=clock.monotonic,
         tool_allowlist=tool_allowlist,
+        protected_roots=tuple(protected_roots),
     )
     return runner, events, tools
 
