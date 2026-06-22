@@ -219,8 +219,11 @@ def _cmd_pipeline(args: argparse.Namespace) -> int:
     import shutil
     backend_present = bool(shutil.which("bwrap") or shutil.which("apptainer"))
     sandbox = backend_present and not args.no_sandbox
+    # Production posture by default: strict policy enforcement (guarantee #3). A
+    # non-compliant config is BLOCKED up front rather than running unprotected.
+    strict = not getattr(args, "no_strict", False) and sandbox
     cfg = RunConfig(run_id=args.run_id or new_run_id(), mode="full", executor="local",
-                    sandbox=sandbox)
+                    sandbox=sandbox, strict=strict)
     run = Run(cfg)
     if not backend_present and not args.no_sandbox:
         sys.stderr.write("note: no sandbox backend (bwrap/apptainer) found; running unsandboxed\n")
@@ -334,8 +337,10 @@ def _cmd_genome_phylo(args: argparse.Namespace) -> int:
         label, path = spec.split("=", 1)
         genomes[label] = path
     backend_present = bool(shutil.which("bwrap") or shutil.which("apptainer"))
+    sandbox = backend_present and not args.no_sandbox
+    strict = not getattr(args, "no_strict", False) and sandbox
     cfg = RunConfig(run_id=args.run_id or new_run_id(), mode="full", executor="local",
-                    sandbox=backend_present and not args.no_sandbox)
+                    sandbox=sandbox, strict=strict)
     run = Run(cfg)
     run.capture_environment()
     run.load_tools(manifest.DEFAULT_TOOLS_DIR)
@@ -411,6 +416,8 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--no-model-selection", action="store_true")
     pp.add_argument("--no-species-tree", action="store_true")
     pp.add_argument("--no-sandbox", action="store_true", help="disable the default execution sandbox")
+    pp.add_argument("--no-strict", action="store_true",
+                    help="disable strict production policy enforcement (NOT recommended)")
     pp.add_argument("--loci-independent", choices=["yes", "no", "unknown"], default="unknown",
                     help="assert whether the loci are independent (ASTRAL is invalid on linked loci)")
     pp.add_argument("--run-id", dest="run_id", default=None)
@@ -441,6 +448,8 @@ def build_parser() -> argparse.ArgumentParser:
     pg.add_argument("--sketch-size", type=int, default=100000)
     pg.add_argument("--reconstructed", default=None, help="comma-separated labels to force as reconstructed")
     pg.add_argument("--no-sandbox", action="store_true")
+    pg.add_argument("--no-strict", action="store_true",
+                    help="disable strict production policy enforcement (NOT recommended)")
     pg.add_argument("--run-id", dest="run_id", default=None)
     pg.set_defaults(func=_cmd_genome_phylo)
 
