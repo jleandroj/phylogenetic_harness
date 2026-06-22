@@ -23,9 +23,31 @@ except ImportError:  # pragma: no cover
     _HAVE_FCNTL = False
 
 
+class AuditUnavailable(Exception):
+    """Raised when the audit log cannot be written. The harness is fail-closed:
+    if an action cannot be logged, it must not run (guarantee #1)."""
+
+
 def audit_path() -> Path:
     p = os.environ.get("HARNESS_AUDIT_LOG")
     return Path(p) if p else Path.home() / ".harness" / "audit.jsonl"
+
+
+def ensure_writable() -> Path:
+    """Confirm the audit log is appendable+durable, or raise AuditUnavailable.
+
+    Called BEFORE any task executes: a bad-faith agent that fills the disk or
+    removes write permission on the log must not be able to run un-logged work.
+    """
+    path = audit_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.flush()
+            os.fsync(fh.fileno())
+    except OSError as exc:
+        raise AuditUnavailable(f"audit log not writable at {path}: {exc}") from exc
+    return path
 
 
 def _last_hash(path: Path) -> str:
@@ -50,6 +72,13 @@ def record(event: str, *, clock=None, **fields: Any) -> dict[str, Any]:
     timestamp (audit timestamps are not reproducible by design)."""
     from . import clock as _clock
     path = audit_path()
+    try:
+        return _record_locked(path, event, clock, fields, _clock)
+    except OSError as exc:
+        raise AuditUnavailable(f"could not append audit record to {path}: {exc}") from exc
+
+
+def _record_locked(path, event, clock, fields, _clock) -> dict[str, Any]:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a+", encoding="utf-8") as fh:
         if _HAVE_FCNTL:
@@ -67,6 +96,7 @@ def record(event: str, *, clock=None, **fields: Any) -> dict[str, Any]:
             rec.update(fields)
             fh.write(json.dumps(rec, sort_keys=True, default=str) + "\n")
             fh.flush()
+            os.fsync(fh.fileno())  # durability: the record survives a crash/power loss
         finally:
             if _HAVE_FCNTL:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)

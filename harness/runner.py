@@ -202,17 +202,27 @@ class TaskRunner:
         # FAILED_FATAL bundle — it never executes, and the harness does not crash.
         from . import audit, killswitch
         run_dir = self.results_dir.parent
-        stopped, scope = killswitch.is_stopped(run_dir)
-        block_reason = None
-        if stopped:
-            block_reason = f"kill-switch active ({scope})"
-        elif self.tool_allowlist is not None and task.tool_id not in self.tool_allowlist:
-            block_reason = f"tool '{task.tool_id}' not in action allowlist"
+        # Fail-closed bitácora: if we cannot durably log, we do not run (guarantee #1).
+        block_reason: str | None
+        try:
+            audit.ensure_writable()
+        except audit.AuditUnavailable as exc:
+            block_reason = f"audit log unavailable — refusing to run unlogged: {exc}"
+        else:
+            stopped, scope = killswitch.is_stopped(run_dir)
+            block_reason = None
+            if stopped:
+                block_reason = f"kill-switch active ({scope})"
+            elif self.tool_allowlist is not None and task.tool_id not in self.tool_allowlist:
+                block_reason = f"tool '{task.tool_id}' not in action allowlist"
         if block_reason:
             self.events.emit(EventType.TASK_FAILED, task_id=task.task_id, reason=block_reason,
                              state=TechnicalState.FAILED_FATAL.value)
-            audit.record("action_blocked", task_id=task.task_id, tool=task.tool_id,
-                         reason=block_reason)
+            try:  # best-effort: the audit log itself may be what's unavailable
+                audit.record("action_blocked", task_id=task.task_id, tool=task.tool_id,
+                             reason=block_reason)
+            except audit.AuditUnavailable:
+                pass
             bundle = {"task_id": task.task_id, "task_type": task.task_type, "tool_id": task.tool_id,
                       "status_technical": "FAILED_FATAL", "status_scientific": "NOT_EVALUATED",
                       "blocked": True, "block_reason": block_reason, "degenerate": False,
