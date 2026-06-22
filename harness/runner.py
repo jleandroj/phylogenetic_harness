@@ -114,8 +114,10 @@ class TaskRunner:
         self, task: Task, argv: list[str], attempt: int, validator_kwargs: dict[str, Any]
     ) -> tuple[ExecutionResult, list[CheckResult], bool]:
         """One execution attempt: run + validate. Raises propagate to run_task."""
+        from .redaction import redact_argv
+        safe_argv = redact_argv(argv)  # secrets on the command line never get logged
         self.events.emit(EventType.TASK_STARTED, task_id=task.task_id, attempt=attempt)
-        self.events.emit(EventType.COMMAND_STARTED, task_id=task.task_id, command=argv)
+        self.events.emit(EventType.COMMAND_STARTED, task_id=task.task_id, command=safe_argv)
         # Central audit: every in-harness tool call is recorded machine-wide too.
         from . import audit
         audit.record("tool_call", tool=task.tool_id, task_id=task.task_id,
@@ -138,7 +140,7 @@ class TaskRunner:
         # Full action record in the central audit (input/output/duration/exit/fail).
         audit.record(
             "action_finished", task_id=task.task_id, tool=task.tool_id, attempt=attempt,
-            argv=argv, inputs=task.inputs, outputs=task.outputs_expected,
+            argv=safe_argv, inputs=task.inputs, outputs=task.outputs_expected,
             exit_code=result.exit_code, wall_seconds=result.wall_seconds,
             timed_out=result.timed_out, ok=result.succeeded,
             stdout_log=result.stdout_path, stderr_log=result.stderr_path,

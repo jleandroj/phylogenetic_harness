@@ -114,10 +114,12 @@ class ExecutionResult:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        from .redaction import redact_argv
+        safe_cmd = redact_argv(list(self.command))  # no secrets in on-disk bundles
         return {
             "task_id": self.task_id,
-            "command": list(self.command),
-            "command_display": " ".join(self.command),
+            "command": safe_cmd,
+            "command_display": " ".join(safe_cmd),
             "exit_code": self.exit_code,
             "started_at": self.started_at,
             "finished_at": self.finished_at,

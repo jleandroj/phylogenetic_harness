@@ -35,6 +35,40 @@ def redact(text: str) -> str:
     return text
 
 
+# A command-line flag whose value is a secret: --password X, --token=X, --api-key X.
+_SECRET_FLAG = re.compile(
+    r"(?i)^(--?)(password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key|auth|credential)"
+    r"(=(.*))?$"
+)
+
+
+def redact_argv(argv: list[str]) -> list[str]:
+    """Mask secrets in a command line before it is logged (audit chain/events).
+
+    Handles both ``--token=VALUE`` (inline) and ``--token VALUE`` (separated), plus
+    any token that itself looks like a credential (via ``redact``). The REAL argv
+    is still what executes — only the logged copy is masked, so a secret passed on
+    the command line never lands in the tamper-proof audit log.
+    """
+    out: list[str] = []
+    mask_next = False
+    for tok in argv:
+        if mask_next:
+            out.append("<redacted>")
+            mask_next = False
+            continue
+        m = _SECRET_FLAG.match(tok)
+        if m:
+            if m.group(3):                       # --token=VALUE
+                out.append(f"{m.group(1)}{m.group(2)}=<redacted>")
+            else:                                # --token VALUE (mask the next token)
+                out.append(tok)
+                mask_next = True
+            continue
+        out.append(redact(tok))
+    return out
+
+
 def redact_env(env: dict[str, str]) -> dict[str, str]:
     """Mask environment variables (audit P1.4).
 
