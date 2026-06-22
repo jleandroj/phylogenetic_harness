@@ -140,6 +140,34 @@ class ExecutionResult:
         }
 
 
+def _kill_process_tree(proc: subprocess.Popen, *, grace_seconds: float = 2.0) -> None:
+    """Terminate the child AND every descendant it spawned.
+
+    The child runs in its own session (``start_new_session=True``), so it leads a
+    process group. We SIGTERM the whole group for a graceful exit, then SIGKILL
+    whatever is left — no orphaned grandchildren survive a timeout or kill-switch.
+    """
+    import signal
+    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, OSError):
+            return
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(pgid, sig)
+            except (ProcessLookupError, OSError):
+                return
+            if sig is signal.SIGTERM:
+                try:
+                    proc.wait(timeout=grace_seconds)
+                    return  # exited cleanly on SIGTERM; no SIGKILL needed
+                except subprocess.TimeoutExpired:
+                    continue
+    else:  # pragma: no cover - non-POSIX fallback
+        proc.kill()
+
+
 def _require_argv(command: Any) -> list[str]:
     if isinstance(command, str):
         raise ShellCommandRejected(
@@ -274,6 +302,9 @@ class LocalExecutor:
                 argv, shell=False, stdout=stdout_target, stderr=subprocess.PIPE,
                 cwd=str(cwd) if cwd else None, env=child_env, bufsize=0,
                 preexec_fn=preexec,
+                # Own session/process group so a timeout/kill reaps the WHOLE tree,
+                # not just the direct child (no orphaned grandchildren escape).
+                start_new_session=True,
             )
             pid = proc.pid
             sampler = PidSampler(pid)
@@ -293,7 +324,7 @@ class LocalExecutor:
                 exit_code = proc.wait(timeout=timeout_seconds)
             except subprocess.TimeoutExpired:
                 timed_out = True
-                proc.kill()
+                _kill_process_tree(proc)
                 exit_code = proc.wait()
             if t_out is not None:
                 t_out.join()
