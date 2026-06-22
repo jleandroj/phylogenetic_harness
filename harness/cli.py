@@ -266,6 +266,47 @@ def _cmd_pipeline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_genome_phylo(args: argparse.Namespace) -> int:
+    """Whole-genome alignment-free phylogeny (Mash + NJ), fully inside the harness."""
+    import shutil
+
+    from . import manifest
+    from .aggregate import aggregate_run
+    from .genome_phylo import run_genome_phylogeny
+    genomes = {}
+    for spec in args.genomes:
+        if "=" not in spec:
+            sys.stderr.write(f"genome spec must be label=path, got {spec!r}\n")
+            return 2
+        label, path = spec.split("=", 1)
+        genomes[label] = path
+    backend_present = bool(shutil.which("bwrap") or shutil.which("apptainer"))
+    cfg = RunConfig(run_id=args.run_id or new_run_id(), mode="full", executor="local",
+                    sandbox=backend_present and not args.no_sandbox)
+    run = Run(cfg)
+    run.capture_environment()
+    run.load_tools(manifest.DEFAULT_TOOLS_DIR)
+    run.write_tools_lock()
+    out = run_genome_phylogeny(
+        run.build_runner(), run_id=cfg.run_id, genomes=genomes, workdir=run.dir / "work",
+        k=args.k, sketch_size=args.sketch_size, outgroup=args.outgroup,
+        reconstructed=set(args.reconstructed.split(",")) if args.reconstructed else None)
+    tools_lock = json.loads((run.dir / "TOOLS.lock.json").read_text())
+    manifest.write_manifest(run.dir, run_config={**cfg.to_dict(), "config_hash": cfg.config_hash},
+                            tools_lock=tools_lock, seed_record=run.seeds.record(),
+                            input_paths=[p for p in genomes.values() if Path(p).exists()])
+    aggregate_run(run.dir)
+    run.finish()
+    sys.stdout.write(json.dumps({
+        "run_dir": str(run.dir),
+        "tree": out.get("tree_path"),
+        "dist_matrix": out.get("dist_tsv"),
+        "reconstructed_taxa": out.get("reconstructed"),
+        "scientific_state": out.get("scientific_state"),
+    }, indent=2) + "\n")
+    return 0
+
+
 def _cmd_resume(args: argparse.Namespace) -> int:
     from .resume import resume_run
     summary = resume_run(args.run_dir)
@@ -321,6 +362,16 @@ def build_parser() -> argparse.ArgumentParser:
                     help="assert whether the loci are independent (ASTRAL is invalid on linked loci)")
     pp.add_argument("--run-id", dest="run_id", default=None)
     pp.set_defaults(func=_cmd_pipeline)
+
+    pg = sub.add_parser("genome-phylo", help="whole-genome alignment-free phylogeny (Mash + NJ)")
+    pg.add_argument("genomes", nargs="+", metavar="label=genome.fa")
+    pg.add_argument("--outgroup", default=None, help="label substring to root on")
+    pg.add_argument("--k", type=int, default=21)
+    pg.add_argument("--sketch-size", type=int, default=100000)
+    pg.add_argument("--reconstructed", default=None, help="comma-separated labels to force as reconstructed")
+    pg.add_argument("--no-sandbox", action="store_true")
+    pg.add_argument("--run-id", dest="run_id", default=None)
+    pg.set_defaults(func=_cmd_genome_phylo)
 
     prs = sub.add_parser("resume", help="resume a crashed run; finish unfinished tasks")
     prs.add_argument("run_dir")

@@ -24,6 +24,7 @@ from . import (  # noqa: F401,E402
     environment,
     events,
     executor,
+    genome_phylo,
     hardware,
     hooks,
     ids,

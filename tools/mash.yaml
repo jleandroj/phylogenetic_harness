@@ -1,0 +1,14 @@
+# Mash: alignment-free genome sketching + distance (whole-genome phylogenomics).
+tool_id: mash
+tool_name: Mash
+version_command: "mash --version"
+requires_gpu: false
+requires_network: false
+input_formats: [FASTA, FASTQ]
+output_formats: [MSH, TSV]
+risks:
+  - Mash distance is a k-mer Jaccard approximation, NOT a substitution-model distance
+  - whole-genome sketches include repeats and any low-quality regions
+validators:
+  - exit_code_zero
+  - file_exists

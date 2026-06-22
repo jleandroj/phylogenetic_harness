@@ -221,6 +221,40 @@ def vcf_header_valid(path: str | Path, **_: Any) -> CheckResult:
     return CheckResult("vcf_header_valid", "FAILED", f"missing header lines: {missing}")
 
 
+def mash_dist_matrix_valid(path: str | Path, **_: Any) -> CheckResult:
+    """Validate a Mash `dist` TSV (ref<TAB>query<TAB>dist<TAB>pval<TAB>shared):
+    parseable, finite distances in [0,1], zero on the diagonal, symmetric."""
+    import math
+    p = Path(path)
+    if not p.exists():
+        return CheckResult("mash_dist_matrix_valid", "FAILED", f"missing: {p}")
+    D: dict[tuple[str, str], float] = {}
+    names: set[str] = set()
+    try:
+        for line in p.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            parts = line.split("\t")
+            if len(parts) < 3:
+                return CheckResult("mash_dist_matrix_valid", "FAILED", "fewer than 3 columns")
+            a, b, d = parts[0], parts[1], float(parts[2])
+            if not math.isfinite(d) or d < 0 or d > 1:
+                return CheckResult("mash_dist_matrix_valid", "FAILED", f"distance out of [0,1]: {d}")
+            D[(a, b)] = d
+            names.update((a, b))
+    except (ValueError, OSError) as exc:
+        return CheckResult("mash_dist_matrix_valid", "FAILED", f"unparseable: {exc}")
+    for n in names:
+        if D.get((n, n), 0.0) > 1e-6:
+            return CheckResult("mash_dist_matrix_valid", "FAILED", f"non-zero diagonal for {n}")
+    for a in names:
+        for b in names:
+            if (a, b) in D and (b, a) in D and abs(D[(a, b)] - D[(b, a)]) > 1e-6:
+                return CheckResult("mash_dist_matrix_valid", "FAILED", f"asymmetric: {a},{b}")
+    return CheckResult("mash_dist_matrix_valid", "PASSED", f"{len(names)} taxa, symmetric",
+                       {"n_taxa": len(names)})
+
+
 class ValidatorRegistry:
     """Name -> validator callable. Each callable takes (path, **kwargs)->CheckResult."""
 
@@ -233,6 +267,7 @@ class ValidatorRegistry:
             "alignment_valid": alignment_valid,
             "newick_valid": newick_valid,
             "vcf_header_valid": vcf_header_valid,
+            "mash_dist_matrix_valid": mash_dist_matrix_valid,
         }.items():
             self._validators[name] = fn
 
