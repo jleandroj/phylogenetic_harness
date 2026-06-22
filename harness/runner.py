@@ -37,6 +37,15 @@ from .tools import ToolRegistry
 from .validators import CheckResult, ValidatorRegistry
 
 
+def _hash_inputs_quiet(inputs: list[str]) -> dict[str, str | None]:
+    """Best-effort input checksums for the bundle (never fail a run over this)."""
+    try:
+        from .integrity import hash_inputs
+        return hash_inputs(inputs)
+    except OSError:
+        return {}
+
+
 class TaskRunner:
     def __init__(
         self,
@@ -227,6 +236,16 @@ class TaskRunner:
                     task.outputs_expected, run_dir, protected_roots=self.protected_roots)
                 if escapes:
                     block_reason = "output path confinement violated: " + "; ".join(escapes)
+                else:
+                    # Fail-closed input integrity: if the task declares a baseline of
+                    # expected input hashes, the on-disk bytes must still match (the
+                    # read-only genomes must not have changed under us).
+                    expected = task.params.get("expected_input_sha256") if task.params else None
+                    if expected:
+                        from .integrity import verify_inputs
+                        bad = verify_inputs(task.inputs, expected)
+                        if bad:
+                            block_reason = "input integrity violation: " + "; ".join(bad)
         if block_reason:
             self.events.emit(EventType.TASK_FAILED, task_id=task.task_id, reason=block_reason,
                              state=TechnicalState.FAILED_FATAL.value)
@@ -352,6 +371,7 @@ class TaskRunner:
             "validators_passed": all_passed,
             "retries": task.retries,
             "outputs": outputs,
+            "inputs_sha256": _hash_inputs_quiet(task.inputs),  # provenance: bytes consumed
             "execution": result.to_dict() if result is not None else None,
             "validation": [c.to_dict() for c in checks],
             "interpretation": interp.to_dict(),
