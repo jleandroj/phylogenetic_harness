@@ -17,6 +17,7 @@ from . import (  # noqa: F401,E402
     aggregate,
     approval,
     audit,
+    autoreport,
     bio,
     bio_report,
     clock,

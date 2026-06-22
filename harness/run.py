@@ -178,10 +178,16 @@ class Run:
 
     def finish(self) -> None:
         self.events.emit(EventType.RUN_FINISHED, run_id=self.config.run_id)
-        self.logger.info("run finished")
+        # Automatic summary + anomaly detection (production guarantee #2).
+        from . import audit, autoreport
+        report = autoreport.generate(self.dir, run_id=self.config.run_id)
+        self.logger.info("run finished", anomalies=report["n_anomalies"], alert=report["alert"])
         self.logger.close()
-        from . import audit
-        audit.record("run_finished", run_id=self.config.run_id, run_dir=str(self.dir))
+        audit.record("run_finished", run_id=self.config.run_id, run_dir=str(self.dir),
+                     anomalies=report["n_anomalies"])
+        if report["n_anomalies"]:
+            audit.record("run_anomalies", run_id=self.config.run_id,
+                         kinds=sorted({a["kind"] for a in report["anomalies"]}))
 
 
 def new_run_id(suffix: str = "001") -> str:

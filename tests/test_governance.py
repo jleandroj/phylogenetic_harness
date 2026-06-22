@@ -86,8 +86,26 @@ def test_audit_chain_is_tamper_evident(tmp_path, monkeypatch):
     assert audit.verify()["ok"] is True
     # Tamper: edit a middle line -> chain breaks.
     lines = log.read_text().splitlines()
-    rec = json.loads(lines[2]); rec["i"] = 999
+    rec = json.loads(lines[2])
+    rec["i"] = 999
     lines[2] = json.dumps(rec, sort_keys=True)
     log.write_text("\n".join(lines) + "\n")
     v = audit.verify()
     assert v["ok"] is False and v["broken_at"] is not None
+
+
+def test_autoreport_on_finish_clean_and_anomalous(runner_factory, tmp_path, monkeypatch):
+    from harness import autoreport
+    from harness.run import Run, RunConfig
+    monkeypatch.setenv("HARNESS_AUDIT_LOG", str(tmp_path / "a.jsonl"))
+    run = Run(RunConfig(run_id="arun", mode="test"), base_dir=tmp_path)
+    # one failed bundle on disk -> anomaly
+    (run.dir / "results").mkdir(parents=True, exist_ok=True)
+    (run.dir / "results" / "t.validation.json").write_text(json.dumps(
+        {"task_id": "t", "status_technical": "FAILED_FATAL", "degenerate": False}))
+    run.finish()
+    assert (run.dir / "RUN_SUMMARY.json").exists()
+    assert (run.dir / "ANOMALIES.json").exists()
+    anomalies = json.loads((run.dir / "ANOMALIES.json").read_text())
+    assert any(a["kind"] == "task_failed" for a in anomalies)
+    assert "ALERT" in (run.dir / "ALERT.txt").read_text()
