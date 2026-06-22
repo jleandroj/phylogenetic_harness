@@ -3,7 +3,8 @@
 Loads the frozen RunConfig + task plan, rehydrates technical state from the event
 log (``recovery.rebuild_state``), records any orphaned tasks (LEASED/RUNNING with
 no terminal event — their worker died), and re-runs only the unfinished tasks via
-the fault-isolating Scheduler. Tasks already terminal are skipped.
+the fault-isolating Supervisor (which also quarantines crash-loop poison tasks).
+Tasks already terminal are skipped.
 
 This is what lets a run survive a 2am crash: nothing is lost, no zombie remains,
 and only the remaining work runs.
@@ -17,7 +18,7 @@ from typing import Any
 
 from . import recovery, taskstore
 from .events import EventStore, EventType
-from .scheduler import Scheduler
+from .supervisor import Supervisor
 
 
 def resume_run(run_dir: str | Path, *, tools_dir: str | Path | None = None) -> dict[str, Any]:
@@ -42,7 +43,9 @@ def resume_run(run_dir: str | Path, *, tools_dir: str | Path | None = None) -> d
     run = Run(cfg, base_dir=run_dir.parent)
     run.load_tools(tools_dir or DEFAULT_TOOLS_DIR)
     tasks = taskstore.load_tasks(run_dir)
-    summary = Scheduler(run.build_runner(worker_id="resume"), run_dir).run(tasks, resume=True)
+    # Supervisor over Scheduler: a task that hard-crashed the process on a prior
+    # attempt is quarantined here, so resume can never enter an infinite crash loop.
+    summary = Supervisor(run.build_runner(worker_id="resume"), run_dir).run(tasks, resume=True)
     run.events.emit(EventType.RECOVERY_COMPLETED, resumed=summary["total"] - len(summary["skipped"]))
     run.finish()
 
