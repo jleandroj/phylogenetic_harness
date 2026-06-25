@@ -56,15 +56,15 @@ class AncestorValidationAgent(Agent):
 
     def _check(self, ctx: AgentContext) -> Verdict:
         from ..genome_phylo import is_reconstructed
-        # candidate genome inputs across the run
+        # candidate genome inputs across the run — including FASTAs consumed from
+        # OUTSIDE the run dir (source genomes / reconstructed ancestors).
         fastas: list[Path] = []
         for ext in ("*.fa", "*.fasta", "*.fna"):
             fastas += list(ctx.run_dir.rglob(ext))
-        for b in ctx.bundles:
-            for inp in (b.get("inputs_sha256") or {}):
-                p = Path(inp)
-                if p.suffix.lower() in (".fa", ".fasta", ".fna"):
-                    fastas.append(p)
+        for inp in ctx.input_files():
+            p = Path(inp)
+            if p.suffix.lower() in (".fa", ".fasta", ".fna"):
+                fastas.append(p)
         fastas = sorted(set(fastas))
         reconstructed = [str(p) for p in fastas if p.exists() and is_reconstructed(p)]
         # did any bundle's observed-taxa-only check FAIL (ancestor used as a tip)?

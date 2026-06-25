@@ -108,6 +108,25 @@ class AgentContext:
             outs.extend(b.get("outputs") or [])
         return outs
 
+    _DATA_EXT = (".fa", ".fasta", ".fna", ".faa", ".vcf", ".gtf", ".gff", ".gff3",
+                 ".hal", ".maf", ".bam", ".nwk", ".newick", ".tree")
+
+    def input_files(self) -> list[str]:
+        """Every input file the run actually consumed — gathered from explicit
+        ``inputs``/``inputs_sha256`` AND the data-like tokens of each recorded argv,
+        so inputs that live OUTSIDE the run dir (e.g. the source genomes/ancestors)
+        are still seen by the verifier."""
+        found: set[str] = set()
+        for b in self.bundles:
+            ex = b.get("execution") or {}
+            for inp in ex.get("inputs", []) or []:
+                found.add(inp)
+            found.update((b.get("inputs_sha256") or {}).keys())
+            for tok in ex.get("command", []) or []:
+                if isinstance(tok, str) and tok.lower().endswith(self._DATA_EXT):
+                    found.add(tok)
+        return sorted(found)
+
 
 class Agent:
     """Base agent. Subclasses set ``name``/``gating`` and implement ``_check``."""

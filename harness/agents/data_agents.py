@@ -21,14 +21,7 @@ class InputIntegrityAgent(Agent):
 
     def _check(self, ctx: AgentContext) -> Verdict:
         from .. import integrity
-        inputs: list[str] = []
-        for b in ctx.bundles:
-            for tid_in in (b.get("execution") or {}).get("inputs", []) or []:
-                inputs.append(tid_in)
-        # bundles also carry inputs_sha256 keys
-        for b in ctx.bundles:
-            inputs.extend((b.get("inputs_sha256") or {}).keys())
-        inputs = sorted(set(inputs))
+        inputs = ctx.input_files()
         if not inputs:
             return Verdict(self.name, AgentStatus.NOT_TESTED, "no declared inputs to validate")
 
@@ -83,25 +76,36 @@ class ProvenanceAgent(Agent):
                            findings=[chain.get("reason", "")], confidence="high")
         finished = [r for r in ctx.audit_records if r.get("event") == "action_finished"]
         executed = [b for b in ctx.bundles if (b.get("execution") or {}).get("exit_code") is not None]
-        if not ctx.audit_records:
-            return Verdict(self.name, AgentStatus.UNKNOWN,
-                           "no audit records found for this run", confidence="none")
-        missing_record = []
-        for b in executed:
-            tid = b.get("task_id")
-            if not any(r.get("task_id") == tid for r in finished):
-                missing_record.append(tid)
         manifest_present = (ctx.run_dir / "RUN_MANIFEST.json").exists()
         ev = [f"audit_records={len(ctx.audit_records)}", f"action_finished={len(finished)}",
               f"chain_keyed={chain.get('keyed')}", f"manifest={manifest_present}"]
+
+        # Provenance can be satisfied by the CENTRAL audit log OR by complete
+        # per-bundle execution records (command + exit + timing). A task with
+        # neither is a real provenance gap.
+        def _bundle_provenance_complete(b: dict) -> bool:
+            ex = b.get("execution") or {}
+            return bool(ex.get("command")) and ex.get("exit_code") is not None \
+                and ex.get("wall_seconds") is not None
+
+        missing_record = []
+        for b in executed:
+            tid = b.get("task_id")
+            in_audit = any(r.get("task_id") == tid for r in finished)
+            if not in_audit and not _bundle_provenance_complete(b):
+                missing_record.append(tid)
         if missing_record:
             return Verdict(self.name, AgentStatus.FAIL,
-                           f"{len(missing_record)} executed task(s) lack a full action record",
+                           f"{len(missing_record)} executed task(s) lack any provenance record",
                            findings=[str(t) for t in missing_record], evidence=ev, confidence="high")
-        status = AgentStatus.PASS if (finished or not executed) else AgentStatus.UNKNOWN
-        return Verdict(self.name, status,
-                       "audit chain verifies and every action is fully recorded",
-                       evidence=ev, confidence="high" if status == AgentStatus.PASS else "low")
+        if not executed and not ctx.audit_records:
+            return Verdict(self.name, AgentStatus.UNKNOWN,
+                           "no executed tasks and no audit records for this run", confidence="none")
+        via = "central audit log" if finished else "per-bundle execution records"
+        conf = "high" if finished else "medium"
+        return Verdict(self.name, AgentStatus.PASS,
+                       f"audit chain verifies; every action has provenance (via {via})",
+                       evidence=ev, confidence=conf)
 
 
 class ReproducibilityAgent(Agent):

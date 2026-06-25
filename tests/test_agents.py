@@ -39,7 +39,8 @@ def _bundle(task_id="r.t1", *, tech="SUCCEEDED", sci="BIOLOGICALLY_INTERPRETABLE
             "status_technical": tech, "status_scientific": sci,
             "validators_passed": validators_passed, "degenerate": degenerate,
             "outputs": outputs or [], "inputs_sha256": inputs_sha256 or {},
-            "execution": {"exit_code": 0, "inputs": []}, "validation": []}
+            "execution": {"exit_code": 0, "inputs": [], "command": ["cp", "a", "b"],
+                          "wall_seconds": 0.1}, "validation": []}
 
 
 def test_factguard_fails_unbacked_claim(tmp_path, monkeypatch):
